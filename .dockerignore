@@ -1,0 +1,10 @@
+.git
+.env
+.venv
+**/__pycache__
+**/.pytest_cache
+**/.ruff_cache
+correctability_coevolution/artifacts
+correctability_coevolution/runtime
+third_party/tau2-bench/.git
+third_party/ms-swift

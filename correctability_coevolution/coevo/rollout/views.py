@@ -23,7 +23,7 @@ def student_view(system_prompt: str, history: list[Message]) -> list[dict]:
     rows = [{"role": "system", "content": system_prompt}]
     for message in history:
         if isinstance(message, AssistantMessage):
-            row = {"role": "assistant", "content": message.content}
+            row = {"role": "assistant", "content": message.content or ""}
             calls = _tool_calls(message)
             if calls:
                 row["tool_calls"] = calls
@@ -43,7 +43,7 @@ def buyer_view(system_prompt: str, history: list[Message]) -> list[dict]:
         if isinstance(message, AssistantMessage) and not message.is_tool_call():
             rows.append({"role": "user", "content": message.content})
         elif isinstance(message, UserMessage):
-            row = {"role": "assistant", "content": message.content}
+            row = {"role": "assistant", "content": message.content or ""}
             calls = _tool_calls(message)
             if calls:
                 row["tool_calls"] = calls

@@ -15,4 +15,6 @@ orms["tau2_correctability"] = CorrectabilityReward
 TrainerFactory.TRAINER_MAPPING["gkd"] = (
     "coevo.training.gated_gkd.CorrectabilityGKDTrainer"
 )
-
+TrainerFactory.TRAINER_MAPPING["grpo"] = (
+    "coevo.training.buyer_trainer.CoevolutionGRPOTrainer"
+)

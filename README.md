@@ -1,12 +1,12 @@
 # Correctability-Driven Environment–Student Co-Evolution
 
-本目录保存“教师可纠正性驱动的环境—学生共进化”项目的研究设计、Swift 基线实现、相关论文代码以及 \(\tau^2\)-Bench / ms-swift 上游依赖。
+本目录保存“教师可纠正性驱动的环境—学生共进化”项目的研究设计、Swift 基线实现和可复现运行入口。\(\tau^2\)-Bench 固定为官方 `v1.0.0` release commit；它与 ms-swift 上游依赖均由 bootstrap 脚本拉取，不直接提交到本仓库。
 
 项目的核心命题是：
 
 > 环境持续寻找“当前学生不会、固定教师能够可靠纠正”的状态，学生再通过纯 On-Policy Distillation 消除这些失败。
 
-当前真正属于本项目的实现位于 [`correctability_coevolution/`](correctability_coevolution/)。它是已经跑过真实一步训练的 **Swift baseline**。`MAD-OPD/`、`ms-swift/` 和 `tau2-bench/` 是论文参考或上游依赖，不是本项目主体代码。
+当前真正属于本项目的实现位于 [`correctability_coevolution/`](correctability_coevolution/)。历史 turn-start LoRA 版本和当前 Teacher-selected multi-cutoff 版本都有真实一步 smoke 记录；正式全参、多轮训练仍需单独验收。
 
 新的 slime 版本将放在同级独立目录 `/mnt/disk4/zhangboyao/OPD-ACL`，不覆盖这里的 Swift baseline。本 README 只描述当前 `OPD/` 目录。
 
@@ -73,12 +73,15 @@ Student 和 Buyer 不在同一个 optimizer step 中同时更新。完整训练�
 ```text
 OPD/
 ├── README.md
+├── pyproject.toml
+├── Dockerfile
+├── compose.yaml
+├── .env.example
 ├── correctability_driven_environment_student_coevolution.md
 ├── correctability_coevolution/
-├── MAD-OPD.pdf
-├── MAD-OPD/
-├── tau2-bench/
-└── ms-swift/
+└── third_party/                 # bootstrap 生成，Git 忽略
+    ├── tau2-bench/
+    └── ms-swift/
 ```
 
 | 路径 | 作用 | 是否属于核心实现 |
@@ -86,33 +89,33 @@ OPD/
 | `README.md` | 仓库入口、代码导航和当前状态 | 是 |
 | `correctability_driven_environment_student_coevolution.md` | 研究方案的 source of truth：方法、公式、训练流程、实验和风险 | 是 |
 | `correctability_coevolution/` | 独立的 Swift + \(\tau^2\) correctability co-evolution 实现 | 是 |
-| `MAD-OPD.pdf` | MAD-OPD 论文 PDF，用于确定 teacher/student 配置和 OPD 基线背景 | 否，参考资料 |
-| `MAD-OPD/` | MAD-OPD 论文代码及本地实验性改动 | 否，基线参考 |
-| `tau2-bench/` | Sierra Research 的 \(\tau^2\)-Bench 上游仓库，提供任务、工具、DB、user simulator 和 verifier | 上游依赖 |
-| `ms-swift/` | ModelScope ms-swift 上游源码，用于检查 GKD、GRPO、multi-turn scheduler 和 plugin 接口 | 上游依赖 |
+| `pyproject.toml` | 本项目 Python 包、测试和 Ruff 配置 | 是 |
+| `Dockerfile` / `compose.yaml` | 无 sudo 的固定 Swift 运行环境和挂载入口 | 运行基础设施 |
+| `third_party/tau2-bench/` | Sierra Research 的 \(\tau^2\)-Bench；由脚本 sparse checkout | 上游依赖 |
+| `third_party/ms-swift/` | 可选的 ModelScope ms-swift 固定源码；使用 `--with-swift-source` 拉取 | 上游依赖 |
 
 ### 上游快照
 
 | 仓库 | 当前 commit | 说明 |
 |---|---|---|
-| `MAD-OPD/` | `6c7a66a` | 工作区包含本地修改，不能视为 pristine upstream |
-| `tau2-bench/` | `f8de30c` | detached HEAD |
-| `ms-swift/` | `c6875ef` | detached HEAD |
+| `third_party/tau2-bench/` | `17e07b1`（`v1.0.0`） | detached sparse checkout |
+| `third_party/ms-swift/` | `c6875ef` | detached sparse checkout |
 
 ## 3. 推荐阅读顺序
 
 第一次审查代码时建议按以下顺序阅读：
 
 1. [`correctability_driven_environment_student_coevolution.md`](correctability_driven_environment_student_coevolution.md)：先理解为什么使用 absolute correctability。
-2. [`correctability_coevolution/FULL_INFRA.md`](correctability_coevolution/FULL_INFRA.md)：查看当前完整数据流、GPU/端口布局和运行入口。
-3. [`coevo/orchestration/collection.py`](correctability_coevolution/coevo/orchestration/collection.py)：查看一轮数据如何落成训练集。
-4. [`coevo/rollout/collector.py`](correctability_coevolution/coevo/rollout/collector.py)：查看完整 trunk 如何收集和拆成 Student turns。
-5. [`coevo/cutoff/`](correctability_coevolution/coevo/cutoff/) 与 [`coevo/rollout/prefix_branch.py`](correctability_coevolution/coevo/rollout/prefix_branch.py)：查看 Teacher 如何选 cutoff，以及相同 prefix 如何分叉。
-6. [`coevo/rewards/`](correctability_coevolution/coevo/rewards/)：查看 \(q_T\)、\(q_S\)、\(C(h)\) 和 Buyer reward。
-7. [`coevo/training/gated_gkd.py`](correctability_coevolution/coevo/training/gated_gkd.py)：查看 Student 的 gated OPD/GKD。
-8. [`coevo/training/buyer_scheduler.py`](correctability_coevolution/coevo/training/buyer_scheduler.py)：查看 Buyer 多轮 rollout、reward 和 loss mask。
-9. [`scripts/run_coevolution.py`](correctability_coevolution/scripts/run_coevolution.py)：查看 Student/Buyer 如何按 round 交替更新。
-10. [`correctability_coevolution/INFRA_SMOKE.md`](correctability_coevolution/INFRA_SMOKE.md)：最后查看历史真实 smoke、指标和曾遇到的问题。
+2. [`correctability_coevolution/SETUP.md`](correctability_coevolution/SETUP.md)：搭建固定版本运行环境并执行 preflight。
+3. [`correctability_coevolution/FULL_INFRA.md`](correctability_coevolution/FULL_INFRA.md)：查看当前完整数据流、GPU/端口布局和运行入口。
+4. [`coevo/orchestration/collection.py`](correctability_coevolution/coevo/orchestration/collection.py)：查看一轮数据如何落成训练集。
+5. [`coevo/rollout/collector.py`](correctability_coevolution/coevo/rollout/collector.py)：查看完整 trunk 如何收集和拆成 Student turns。
+6. [`coevo/cutoff/`](correctability_coevolution/coevo/cutoff/) 与 [`coevo/rollout/prefix_branch.py`](correctability_coevolution/coevo/rollout/prefix_branch.py)：查看 Teacher 如何选 cutoff，以及相同 prefix 如何分叉。
+7. [`coevo/rewards/`](correctability_coevolution/coevo/rewards/)：查看 \(q_T\)、\(q_S\)、\(C(h)\) 和 Buyer reward。
+8. [`coevo/training/gated_gkd.py`](correctability_coevolution/coevo/training/gated_gkd.py)：查看 Student 的 gated OPD/GKD。
+9. [`coevo/training/buyer_scheduler.py`](correctability_coevolution/coevo/training/buyer_scheduler.py)：查看 Buyer 多轮 rollout、reward 和 loss mask。
+10. [`scripts/run_coevolution.py`](correctability_coevolution/scripts/run_coevolution.py)：查看 Student/Buyer 如何按 round 交替更新。
+11. [`correctability_coevolution/INFRA_SMOKE.md`](correctability_coevolution/INFRA_SMOKE.md)：最后查看历史真实 smoke、指标和曾遇到的问题。
 
 ## 4. `correctability_coevolution` 文件说明
 
@@ -121,13 +124,14 @@ OPD/
 | 文件 | 作用 |
 |---|---|
 | `FULL_INFRA.md` | 当前版本的主文档；描述 Teacher-selected multi-cutoff、全参 Student OPD、Buyer GRPO 和 round controller |
+| `SETUP.md` | 固定上游、容器构建、preflight、测试和最小真实 smoke 操作手册 |
 | `INFRA_SMOKE.md` | 2026-08-02 的历史 LoRA smoke 记录；其中 turn-start 单 cutoff 已被当前 multi-cutoff 设计替代 |
 
 ### 4.2 配置与模型构造
 
 | 文件 | 作用 |
 |---|---|
-| `coevo/config.py` | 定义 Teacher、Student、Buyer endpoint，以及 domain、task、cutoff、continuation、prior、seed 等实验参数；支持从环境变量读取 |
+| `coevo/config.py` | 定义 Teacher、Student、Buyer endpoint，以及 domain、task split、task、cutoff、continuation、prior、seed 等实验参数；支持从环境变量读取 |
 | `coevo/models/tau2_factory.py` | 将三个 endpoint 转成 \(\tau^2\) policy；Teacher 使用 `LLMGTAgent` 获取 oracle plan，Student 使用 `LLMAgent`，Buyer reference 使用 `UserSimulator` |
 | `coevo/models/__init__.py` | 导出模型工厂 |
 
@@ -199,6 +203,9 @@ Student 与 Buyer 的 mask 边界不同：
 |---|---|
 | `scripts/start_role.sh` | 按 role 启动 Teacher、Student、Buyer reference 或 Swift rollout server，并记录 PID |
 | `scripts/start_servers.sh` | 一次启动四个服务角色 |
+| `scripts/preflight.py` | 检查 Python、依赖、固定版本、模型、端口、服务和 GPU 布局 |
+| `scripts/bootstrap_upstreams.sh` | sparse checkout 固定版本 τ²-Bench 和 ms-swift；可选安装 |
+| `scripts/download_qwen3_4b.sh` | 通过 ModelScope 下载 Qwen3-4B，并按固定 Hugging Face revision 对应的权重、配置与 tokenizer SHA-256 校验 |
 | `scripts/wait_for_servers.py` | 轮询 OpenAI-compatible `/v1/models`，直到服务 ready 或超时 |
 | `scripts/stop_role.sh` | 只停止本项目 PID 文件记录的指定角色 |
 | `scripts/stop_servers.sh` | 停止四个本项目服务 |
@@ -209,12 +216,15 @@ Student 与 Buyer 的 mask 边界不同：
 | `scripts/train_student_full.sh` | Student 全参 GKD/OPD 训练入口 |
 | `scripts/train_buyer_full.sh` | Buyer 全参 GRPO 训练入口，使用独立 Swift rollout server |
 | `scripts/run_coevolution.py` | round controller：收集数据、更新 Student、刷新 Student 服务、更新 Buyer、刷新 Buyer 服务并写 manifest |
+| `scripts/evaluate_student.sh` | 用固定、独立的 user simulator 和原生 τ² verifier 评测 Student；训练后的 Buyer 不参与最终评测 |
 
 ### 4.10 测试
 
 | 文件 | 作用 |
 |---|---|
 | `tests/test_core.py` | 验证 correctability 公式、validity gate、semantic cutoff、Teacher-selected cutoff mean 和逐样本 GKD gate |
+| `tests/test_buyer_scheduler.py` | 验证 Buyer 逐行 domain/split/task 语义、最终动作评分、loss mask、非法动作和截断处理 |
+| `tests/test_tau2_integration.py` | 用真实 τ² v1 airline/retail/telecom 数据验证官方 split、角色信息边界、v1 消息序列化和 user tool 状态恢复 |
 
 `__init__.py` 文件只负责导出各子包的公共接口；`__pycache__/`、`.pytest_cache/` 和 `.ruff_cache/` 都是生成缓存，不属于源码。
 
@@ -226,7 +236,7 @@ Student 与 Buyer 的 mask 边界不同：
 |---|---|
 | `trajectory.json` | 单轨迹运行时的完整可读记录 |
 | `trajectories.jsonl` | 多轨迹 trunk、Student turns、cutoffs 和 correctability |
-| `student_gkd.jsonl` | Student OPD/GKD 数据；含 `messages`、`teacher_prompt`、`correctability` 和 task metadata |
+| `student_gkd.jsonl` | Student OPD/GKD 数据；含 `messages`、`teacher_prompt`、`correctability` 和 domain/split/task metadata |
 | `buyer_grpo.jsonl` | Buyer GRPO 初始状态；后续多轮交互由 scheduler 在线执行 |
 | `summary.json` | task 数、trajectory 数、turn/cutoff 数和 correctability 列表 |
 
@@ -234,16 +244,23 @@ Student 与 Buyer 的 mask 边界不同：
 
 ## 6. 当前 Swift baseline 的运行方式
 
-### 6.1 进入容器
+### 6.1 首次搭建
 
 ```bash
+cp .env.example .env
+# 编辑 .env 中的 COEVO_TEACHER_MODEL_DIR 和 COEVO_STUDENT_MODEL_DIR
+./correctability_coevolution/scripts/bootstrap_upstreams.sh
+docker compose build coevo
+docker compose up -d coevo
 docker exec -it swift-grpo-dev bash
-cd /workspace/OPD/correctability_coevolution
 ```
+
+完整说明见 [`correctability_coevolution/SETUP.md`](correctability_coevolution/SETUP.md)。所有脚本都会从自身位置发现项目根目录，不再要求源码必须位于 `/workspace/OPD`。
 
 ### 6.2 启动服务
 
 ```bash
+python scripts/preflight.py start
 ./scripts/start_servers.sh
 ```
 
@@ -260,16 +277,14 @@ cd /workspace/OPD/correctability_coevolution
 ### 6.3 只收集数据
 
 ```bash
-PYTHONPATH=/workspace/OPD/correctability_coevolution:/workspace/OPD/tau2-bench/src \
 python scripts/collect_round.py \
   --output-dir artifacts/example_round \
-  --task-ids 1 2
+  --task-ids 1 3
 ```
 
 ### 6.4 运行一个交替 round
 
 ```bash
-PYTHONPATH=/workspace/OPD/correctability_coevolution:/workspace/OPD/tau2-bench/src \
 python scripts/run_coevolution.py \
   --output-dir artifacts/full_run \
   --rounds 1 \
@@ -283,11 +298,24 @@ python scripts/run_coevolution.py \
 ### 6.5 单元测试
 
 ```bash
-PYTHONPATH=/workspace/OPD/correctability_coevolution:/workspace/OPD/tau2-bench/src \
-python -m pytest -q tests
+pytest -q
 ```
 
-### 6.6 停止服务
+### 6.6 使用独立 User 评测 Student
+
+```bash
+export OPENAI_API_KEY=...
+COEVO_EVAL_SAVE_TO=student_gpt41_airline \
+./scripts/evaluate_student.sh 2 6
+```
+
+训练和数据收集默认只读取 τ² v1 官方 `train` split；最终 benchmark 默认只读取
+`test` split。airline / retail / telecom 的 train/test 数量分别为 30/20、74/40、
+74/40，三组 domain 内均不重叠。训练中的 Buyer 是可学习 Qwen3-4B；最终 benchmark
+使用 v1 官方示例里的固定 `gpt-4.1` user simulator。环境不是模型，而是 τ² 的
+数据库、工具、policy、task 初始状态和 verifier。
+
+### 6.7 停止服务
 
 ```bash
 ./scripts/stop_servers.sh
@@ -301,6 +329,7 @@ python -m pytest -q tests
 | `COEVO_STUDENT_URL` | `http://127.0.0.1:8001` | Student endpoint |
 | `COEVO_BUYER_URL` | `http://127.0.0.1:8002` | Buyer reference endpoint |
 | `COEVO_DOMAIN` | `airline` | \(\tau^2\) domain |
+| `COEVO_TASK_SPLIT` | `train` | 共进化数据使用的官方 task split |
 | `COEVO_TASK_ID` | `1` | 默认 task ID |
 | `COEVO_CUTOFFS_PER_TURN` | `2` | 每个 Student turn 由 Teacher 选择的 cutoff 数 |
 | `COEVO_MAX_CUTOFF_TURNS` | `3` | 每条 trunk 最多评分的 Student turn 数 |
@@ -309,6 +338,8 @@ python -m pytest -q tests
 | `COEVO_BRANCH_MAX_STEPS` | `24` | continuation 最大环境步数 |
 | `COEVO_BRANCH_MAX_TOKENS` | `256` | prefix completion 最大 token 数 |
 | `COEVO_SEED` | `42` | rollout 与 selector seed |
+| `COEVO_EVAL_TASK_SPLIT` | `test` | 最终独立评测使用的官方 task split |
+| `COEVO_EVAL_USER_MODEL` | `gpt-4.1` | 最终独立评测使用的固定 user simulator |
 
 模型路径和 GPU 可以通过 `COEVO_*_PATH`、`COEVO_*_BASE_MODEL` 和 `COEVO_*_GPU(S)` 环境变量覆盖；完整列表直接查看 `scripts/start_role.sh`、`train_student_full.sh` 和 `train_buyer_full.sh`。
 
@@ -328,16 +359,27 @@ python -m pytest -q tests
 
 该 smoke 使用的是早期 turn-start 单 cutoff，不代表当前 Teacher-selected multi-cutoff 全量训练已经完成。
 
-### 当前 multi-cutoff / full-param 代码
+### 当前 v1 multi-cutoff 代码
 
 `FULL_INFRA.md` 记录：
 
 - Ruff 通过；
-- 5 个核心测试通过；
+- 14 个单元与 τ² v1 集成测试通过；
 - Swift plugin import 和 full-tuner CLI preflight 通过；
-- 新的 Teacher-selected multi-cutoff 全参真实训练尚未产生完整指标。
+- Teacher、Student、Buyer reference 和 Buyer rollout 四个真实服务通过；
+- 官方 v1 `airline/train` task 1 的真实采集通过，覆盖 v1 `MultiToolMessage`；
+- 新的 Teacher-selected multi-cutoff Student gated-GKD 与 Buyer masked-GRPO 均完成
+  1-step LoRA 并保存 checkpoint；产物位于
+  `correctability_coevolution/artifacts/v1_infra_smoke/` 和
+  `correctability_coevolution/artifacts/v1_buyer_reward_smoke/`（默认被 Git 忽略）；
+- v1 retail 的 NL-assertion reward basis 已接入固定 Teacher judge；服务按独立 process
+  group 启停，实测可完整清除 vLLM 子进程而不影响其他角色。
 
-因此，目前可以确认的是代码路径和历史一步训练成立；不能把它描述为已经完成全量共进化实验。
+Student 最小样本为 `loss=0.0193512`、`grad_norm=0.0718474`；Retail Buyer 单轮
+验收为 `reward=0.125`、`reward_std=0.1944`、`loss=0.01389`、
+`grad_norm=0.1174`，4 个 generation 的截断率为 25%。这些结果证明真实接口、reward
+和训练链路可执行，不证明学习效果。正式全参训练与独立 `test` benchmark 尚未运行，
+不能把它描述为已完成全量共进化实验。
 
 ## 9. 哪些目录不是核心源码
 
@@ -350,7 +392,8 @@ python -m pytest -q tests
 - `MAD-OPD/outputs/` 和 `MAD-OPD/.cache/`；
 - `ms-swift/`、`tau2-bench/`、`MAD-OPD/` 的 `.git/`。
 
-模型权重不在本仓库中，运行脚本默认从 `/models/Qwen3-32B` 和 `/models/Qwen3-4B` 读取。
+模型权重不在本仓库中；Compose 默认把宿主机模型分别只读挂载为
+`/models/teacher` 和 `/models/student`。
 
 ## 10. 开发约束
 
@@ -362,4 +405,3 @@ python -m pytest -q tests
 4. API、模型服务或环境调用失败时直接抛出异常，保留现场用于排查。
 5. environment、rollout、cutoff、reward、training 和 orchestration 保持模块化，不把全部逻辑塞进单个脚本。
 6. 不修改上游 `ms-swift` 和 `tau2-bench`；框架接入通过本项目 plugin/adapter 完成。
-

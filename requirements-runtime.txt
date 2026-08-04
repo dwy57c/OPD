@@ -1,0 +1,6 @@
+# Run scripts/bootstrap_upstreams.sh --with-swift-source first. These editable installs keep the
+# runtime pinned to the source revisions recorded in scripts/versions.env. On the pinned Python
+# 3.11 Swift image, install this file with PIP_IGNORE_REQUIRES_PYTHON=1; SETUP.md explains why.
+-e .
+-e ./third_party/tau2-bench[voice]
+-e ./third_party/ms-swift

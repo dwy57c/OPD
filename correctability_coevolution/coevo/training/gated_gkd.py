@@ -16,9 +16,7 @@ class CorrectabilityGKDTrainer(GKDTrainer):
         ):
             return super().training_step(model, inputs, num_items_in_batch)
 
-        self._correctability_gates = [
-            float(item["correctability"]) for item in inputs
-        ]
+        self._correctability_gates = [float(item["correctability"]) for item in inputs]
         collected = []
         for item in inputs:
             row = dict(item)
@@ -60,6 +58,7 @@ class CorrectabilityGKDTrainer(GKDTrainer):
             "correctability",
             "cutoff_count",
             "domain",
+            "task_split",
             "task_id",
         ):
             encoded.pop(key, None)

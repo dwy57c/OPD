@@ -69,21 +69,28 @@ batch 内不对 `C_i` 做归一化。Teacher top-20 logits 由端口 8000 的固
 
 ## 5. Buyer 全参 GRPO
 
-`Tau2BuyerScheduler` 在更新后的冻结 Student 下进行在线多轮 rollout。每个已完成 Student turn 都调用同一套 Teacher-selected cutoff scorer，累计：
+`Tau2BuyerScheduler` 在更新后的冻结 Student 下进行在线多轮 rollout。scheduler 运行在独立的 `swift rollout` server 内；每个 Buyer 输出（包括最后一个）都会先进入对应 task 的 τ² 环境，再决定终止和计算 reward。每个已完成 Student turn 都调用同一套 Teacher-selected cutoff scorer，累计：
 
 ```text
 R_B = trajectory_validity * mean_t(C_t)
 ```
 
-Swift loss mask 只覆盖 Buyer response token；Student、工具和 Teacher branch token 都不进入 Buyer loss。端口 8002 是 phase 内固定的 τ² Buyer reference；GRPO rollout 使用独立的 `swift rollout` server mode，完整权重由 Trainer 同步到端口 8003。
+Swift loss mask 只覆盖 Buyer response token；Student、工具和 Teacher branch token 都不进入 Buyer loss。scheduler 从每条数据的 `domain` / `task_split` / `task_id` 选择 DB、oracle plan 和 verifier，不再把多 task batch 固定到 task 1。端口 8002 是 phase 内固定的 τ² Buyer reference；GRPO rollout 使用独立的 `swift rollout` server mode，完整权重由 Trainer 同步到端口 8003。
+
+训练后的 Buyer 只用于下一轮生成更有区分度的训练环境，不作为最终 benchmark
+user。最终结果使用 `scripts/evaluate_student.sh`，让 Student checkpoint 面对固定的
+独立 user simulator（`v1.0.0` 官方示例为 `gpt-4.1`）并交给原生 τ² verifier。
+τ² environment 不是模型；它负责数据库、工具执行、业务 policy 和状态验证。
+
+训练/收集默认使用 v1 官方 `train` split，最终评测默认使用官方 `test` split；split
+名称和 task ID 一起写入每条训练数据，防止 Buyer scheduler 跨 split 复用错误环境。
 
 ## 6. 运行
 
-进入容器：
+首次运行先按 [`SETUP.md`](SETUP.md) 拉取固定上游、构建容器并执行 preflight。进入容器：
 
 ```bash
 docker exec -it swift-grpo-dev bash
-cd /workspace/OPD/correctability_coevolution
 ```
 
 启动 Teacher、Student、冻结 Buyer reference 和 Buyer rollout 服务：
@@ -96,16 +103,14 @@ cd /workspace/OPD/correctability_coevolution
 
 ```bash
 COEVO_CUTOFFS_PER_TURN=2 COEVO_MAX_CUTOFF_TURNS=3 \
-PYTHONPATH=/workspace/OPD/correctability_coevolution:/workspace/OPD/tau2-bench/src \
 python scripts/collect_round.py \
   --output-dir artifacts/example_round \
-  --task-ids 1 2
+  --task-ids 1 3
 ```
 
 运行一个两步 Student + 两步 Buyer 的完整 round：
 
 ```bash
-PYTHONPATH=/workspace/OPD/correctability_coevolution:/workspace/OPD/tau2-bench/src \
 python scripts/run_coevolution.py \
   --output-dir artifacts/full_run \
   --rounds 1 \
@@ -115,6 +120,13 @@ python scripts/run_coevolution.py \
 ```
 
 如果服务尚未启动，可增加 `--start-services`。
+
+独立评测 Student（位置参数为可选 task ID）：
+
+```bash
+OPENAI_API_KEY=... COEVO_EVAL_SAVE_TO=student_gpt41_airline \
+./scripts/evaluate_student.sh 2 6
+```
 
 ## 7. GPU profile
 
@@ -130,18 +142,38 @@ python scripts/run_coevolution.py \
 
 GPU 可以通过 `COEVO_TEACHER_GPUS`、`COEVO_STUDENT_GPU`、`COEVO_BUYER_GPU`、`COEVO_BUYER_ROLLOUT_GPU`、`COEVO_STUDENT_TRAIN_GPUS` 和 `COEVO_BUYER_TRAIN_GPUS` 修改。
 
+当前 2-way TP Teacher 显式使用 `--disable-custom-all-reduce`，回退到 NCCL。原因是
+这台 A100 节点上的 vLLM 0.19.1 custom all-reduce 在 KV cache profiling 阶段返回
+CUDA `invalid argument`；NCCL 路径已通过真实启动验证。
+
 ## 8. 当前验证
 
-已通过：
+2026-08-03 已在 6 张 A100 上完成以下真实链路，而不只是 CLI 或 mock 检查：
 
 ```text
 ruff: all checks passed
-pytest: 5 passed
+pytest: 14 passed
 Swift plugin import: passed
 Swift 4.1.3 full tuner / GKD / GRPO / server-mode CLI preflight: passed
+4 services: Teacher / Student / Buyer reference / Buyer rollout ready
+tau2 v1 train split: airline task 1 collection passed
+Student LoRA gated-GKD: 1 step, loss 0.0193512, grad_norm 0.0718474
+Buyer LoRA masked-GRPO: 1 step, reward 0.125, loss 0.01389, grad_norm 0.1174
 ```
 
-真实模型 smoke 的产物与指标在完成后写入 `artifacts/full_smoke/`。
+本轮产物位于 `artifacts/v1_infra_smoke/`。采集限制为 1 个 trajectory、1 个
+Student turn、1 个 Teacher-selected cutoff 和每个 policy 1 次 continuation；得到
+`qT=1/3`、`qS=1/3`、`C=2/9`。分数包含 Beta(1,1) prior，只用于证明 v1 task、
+MultiToolMessage、模型生成、prefix branch 和 verifier 的端到端连通性，不是性能结论。
 
-2026-08-03 本轮代码完成时，8 张 A100 正被既有 `task37-*` Megatron/SGLang
-训练容器占用；本项目没有抢占或停止这些进程，因此尚未生成新的真实模型指标。
+额外的 Buyer 验收位于 `artifacts/v1_buyer_reward_smoke/`，使用官方
+`retail/train` task 0 和单轮 scheduler。4 个 generation 中 1 个被 512-token 上限
+截断，其余样本真实执行 retail 工具、Student turn、Teacher/Student terminal branch、
+v1 NL-assertion judge、reward plugin 和 Buyer loss mask；最终 `reward_std=0.1944`，产生
+非零梯度并保存 checkpoint。NL assertion 默认由固定 Teacher 评判，可通过
+`COEVO_NL_JUDGE_*` 覆盖；并发评分用进程内锁隔离 v1 的全局 judge 配置。
+
+所有服务都在独立 Unix process group 中运行，停止 rollout 的实测同时清除了其
+`VLLM::EngineCore` 并释放 GPU 4，没有影响其他三个服务。以上均是 LoRA 的最小链路
+验收；正式的全参多轮训练和独立 `test` split benchmark 尚未运行，不能据此宣称
+实验收敛。

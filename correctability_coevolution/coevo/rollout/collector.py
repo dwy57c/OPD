@@ -19,11 +19,14 @@ class CorrectabilityCollector:
         self.scorer = scorer
         self.max_turns = max_turns
 
-    def collect_one(self) -> dict:
+    def collect_one(self, seed: int | None = None) -> dict:
         env = self.environment
         initial_history = env.initial_history()
         initial_size = len(initial_history)
-        orchestrator = env.orchestrator(initial_history, "student")
+        trajectory_seed = env.config.seed if seed is None else seed
+        orchestrator = env.orchestrator(
+            initial_history, "student", seed=trajectory_seed
+        )
         orchestrator.initialize()
         while not orchestrator.done:
             orchestrator.step()
@@ -43,7 +46,9 @@ class CorrectabilityCollector:
                 break
         return {
             "domain": env.config.domain,
+            "task_split": env.config.task_split,
             "task_id": env.task.id,
+            "seed": trajectory_seed,
             "trunk": dump_messages(trunk),
             "student_turns": student_turns,
         }
@@ -56,6 +61,7 @@ class CorrectabilityCollector:
         rows = []
         for turn in record["student_turns"]:
             from coevo.environment.tau2 import load_messages
+
             history_before = load_messages(turn["history_before"])
             full_history = [
                 *history_before,
@@ -78,6 +84,7 @@ class CorrectabilityCollector:
                     "correctability": turn["correctability"],
                     "cutoff_count": len(turn["cutoffs"]),
                     "domain": env.config.domain,
+                    "task_split": env.config.task_split,
                     "task_id": env.task.id,
                 }
             )
@@ -88,9 +95,13 @@ class CorrectabilityCollector:
         raw_environment = env.fresh_environment()
         buyer = env.policies.buyer_reference(raw_environment, env.task)
         history = env.initial_history()
-        return {
+        row = {
             "messages": buyer_view(buyer.system_prompt, history),
             "domain": env.config.domain,
+            "task_split": env.config.task_split,
             "task_id": env.task.id,
             "tau_history": dump_messages(history),
         }
+        if buyer.tools:
+            row["tools"] = [tool.openai_schema for tool in buyer.tools]
+        return row

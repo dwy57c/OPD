@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT=/workspace/OPD/correctability_coevolution
-for name in teacher student buyer rollout; do
-  "$ROOT/scripts/stop_role.sh" "$name"
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+source "$SCRIPT_DIR/lib/common.sh"
+
+status=0
+for name in rollout buyer student teacher; do
+  "$COEVO_ROOT/scripts/stop_role.sh" "$name" || status=1
 done
+exit "$status"
