@@ -14,10 +14,8 @@ cleanup_partial_start() {
 trap cleanup_partial_start ERR INT TERM
 
 python "$COEVO_ROOT/scripts/preflight.py" start
-"$COEVO_ROOT/scripts/start_role.sh" teacher "$COEVO_TEACHER_PATH"
-started+=(teacher)
-"$COEVO_ROOT/scripts/start_role.sh" student "$COEVO_STUDENT_PATH"
-started+=(student)
+"$COEVO_ROOT/scripts/start_role.sh" policy "$COEVO_POLICY_PATH"
+started+=(policy)
 "$COEVO_ROOT/scripts/start_role.sh" buyer "$COEVO_BUYER_PATH"
 started+=(buyer)
 "$COEVO_ROOT/scripts/start_role.sh" rollout "$COEVO_BUYER_PATH"

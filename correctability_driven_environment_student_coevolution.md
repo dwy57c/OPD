@@ -13,7 +13,14 @@
 1. 教师在当前学生诱导状态上是否真的能够提供可靠纠正；
 2. 训练环境能否主动产生对当前学生最有教学价值的交互状态。
 
-本文提出一个由固定特权教师引导的环境—学生共进化框架。Buyer 不是一次性生成初始 prompt，而是在多轮对话中观察学生当前回答，再决定下一轮用户输入，因此它构成一个 closed-loop environment policy。对于学生生成的每个 turn，我们在同一输出序列中设置多个 cutoff，并从相同学生前缀分别让固定教师和当前学生继续完成任务。借助独立 verifier，估计教师从该状态成功的概率与学生自行恢复的概率，并据此定义状态的**绝对可纠正性**：教师能够完成，而学生当前不能完成。
+本文提出一个由闭源 hint 增强教师视角引导的环境—学生共进化框架。Student 与
+Teacher 不是两套不同能力的本地模型，而是同一个 policy snapshot：Student 只接收
+部署可见上下文，Teacher 额外接收闭源模型根据当前上下文和特权任务信息生成的私有
+hint。Buyer 不是一次性生成初始 prompt，而是在多轮对话中观察学生当前回答，再决定
+下一轮用户输入，因此它构成一个 closed-loop environment policy。对于学生生成的每个
+turn，我们在同一输出序列中设置多个 cutoff，并从相同学生前缀分别让有 hint 与无 hint
+的同一 policy 继续完成任务。借助独立 verifier，估计 hint 条件下的成功概率与 policy
+自行恢复的概率，并据此定义状态的**绝对可纠正性**。
 
 该信号承担两个彼此一致的角色：
 
@@ -85,7 +92,7 @@ $$
 
 也就是：
 
-> 学生暂时不会，但固定教师能够可靠纠正。
+> 同一 policy 自己暂时不会，但在闭源 hint 帮助下能够可靠纠正。
 
 这一区域既排除了“学生已经掌握”的简单状态，也排除了“连教师都无法处理”的不可教状态。
 
@@ -97,7 +104,8 @@ $$
 
 ### 2.1 学生只使用 OPD
 
-学生不使用任务 reward 做 GRPO 或其他 policy-gradient 更新。学生唯一的学习信号是固定教师在学生 on-policy prefix 上提供的分布监督：
+学生不使用任务 reward 做 GRPO 或其他 policy-gradient 更新。学生唯一的学习信号是
+同一 policy snapshot 在闭源 hint 条件下、针对学生 on-policy prefix 提供的分布监督：
 
 $$
 \text{Student update}=\text{correctability-gated OPD}.
@@ -113,15 +121,20 @@ Buyer 本身是可训练的生成策略，因此可以使用 GRPO、PPO 或其�
 - Buyer-GRPO 只是最大化这一环境 reward 的实现方式；
 - 学生不接收该 reward，也不做任务强化学习。
 
-### 2.3 教师固定并拥有特权信息
+### 2.3 Student 与 Teacher 共享 policy，Teacher 仅多私有 hint
 
-教师记为 $\pi_T^P$，其中上标 $P$ 表示教师可以访问 plan、hint、标准操作流程、隐藏目标或其他部署学生不可见的特权信息。
+共享策略记为 $\pi_{\theta_k}$。Student view 为
+$\pi_{\theta_k}(\cdot\mid h)$；Teacher view 为
+$\pi_{\theta_k}(\cdot\mid h,\eta(h,p))$，其中 $\eta$ 是闭源模型根据当前上下文和
+特权信息 $p$ 生成的私有 hint。两者模型、参数和服务 endpoint 相同。
 
-教师最好固定，因为它在系统中承担可纠正性标尺。如果教师、Buyer 和学生同时快速变化，就很难判断 reward 变化来自学生真正进步、环境变简单，还是教师标尺本身发生漂移。
+在一个 collection/training round 内，policy snapshot 与闭源 hinter 都固定。OPD 更新
+完成后，Student 与 Teacher 一起切换到新的 $\pi_{\theta_{k+1}}$；不存在长期独立演化的
+Teacher checkpoint。这样 Teacher–Student 差异只能归因于 hint，而不是模型容量差异。
 
 因此，本文研究的是：
 
-> **fixed privileged teacher 引导的 environment–student co-evolution。**
+> **shared policy with private closed-model hints 引导的 environment–student co-evolution。**
 
 ### 2.4 Verifier 只判断“是否成功”，不直接训练学生
 
@@ -200,8 +213,8 @@ $$
 
 从同一个状态 $h=h_{g,i,t,c}$ 出发：
 
-1. 让带有 plan／hint 的固定教师继续完成任务；
-2. 让当前学生从相同状态自行继续；
+1. 让共享 policy 在闭源 hint 条件下继续完成任务；
+2. 让同一 policy 在无 hint 条件下从相同状态自行继续；
 3. 分别采样 $M$ 次；
 4. 尽可能共享环境 seed 或外部随机条件；
 5. 使用 verifier 判断最终任务是否成功。
@@ -872,4 +885,3 @@ Buyer 奖励随学生变化是共进化的来源，也会造成非平稳。Buyer
 - **Learning to Generate Teachable Interactions with On-Policy Distillation**
 - **Teacher-Certified Environment Generation for On-Policy Distillation**
 - **Beyond Difficulty: Teacher-Correctable Curricula for On-Policy Distillation**
-

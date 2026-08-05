@@ -255,9 +255,8 @@ def validate_local_model(reference: str) -> tuple[bool, str]:
 def check_models(checks: list[Check]) -> None:
     model_root = os.getenv("COEVO_MODEL_ROOT", "/models")
     models = {
-        "teacher-model": os.getenv("COEVO_TEACHER_PATH", f"{model_root}/Qwen3-32B"),
-        "student-model": os.getenv("COEVO_STUDENT_PATH", f"{model_root}/Qwen3-4B"),
-        "buyer-model": os.getenv("COEVO_BUYER_PATH", f"{model_root}/Qwen3-4B"),
+        "shared-policy-model": os.getenv("COEVO_POLICY_PATH", f"{model_root}/policy"),
+        "buyer-model": os.getenv("COEVO_BUYER_PATH", f"{model_root}/policy"),
     }
     for name, reference in models.items():
         if local_model(reference):
@@ -269,8 +268,7 @@ def check_models(checks: list[Check]) -> None:
 
 def ports() -> dict[str, int]:
     return {
-        "teacher": int(os.getenv("COEVO_TEACHER_PORT", "8000")),
-        "student": int(os.getenv("COEVO_STUDENT_PORT", "8001")),
+        "policy": int(os.getenv("COEVO_POLICY_PORT", "8000")),
         "buyer": int(os.getenv("COEVO_BUYER_PORT", "8002")),
         "rollout": int(os.getenv("COEVO_BUYER_ROLLOUT_PORT", "8003")),
     }
@@ -295,11 +293,8 @@ def check_free_ports(checks: list[Check]) -> None:
 def service_urls() -> dict[str, str]:
     role_ports = ports()
     return {
-        "teacher": os.getenv(
-            "COEVO_TEACHER_URL", f"http://127.0.0.1:{role_ports['teacher']}"
-        ),
-        "student": os.getenv(
-            "COEVO_STUDENT_URL", f"http://127.0.0.1:{role_ports['student']}"
+        "policy": os.getenv(
+            "COEVO_POLICY_URL", f"http://127.0.0.1:{role_ports['policy']}"
         ),
         "buyer": os.getenv(
             "COEVO_BUYER_URL", f"http://127.0.0.1:{role_ports['buyer']}"
@@ -353,20 +348,19 @@ def check_gpus(checks: list[Check], require_all_free: bool) -> None:
         inventory[index] = (used, total)
 
     service_gpu_sets = {
-        "teacher": parse_gpu_ids(os.getenv("COEVO_TEACHER_GPUS", "0,1")),
-        "student": parse_gpu_ids(os.getenv("COEVO_STUDENT_GPU", "2")),
+        "policy": parse_gpu_ids(os.getenv("COEVO_POLICY_GPUS", "0")),
         "buyer": parse_gpu_ids(
-            os.getenv("COEVO_BUYER_GPUS", os.getenv("COEVO_BUYER_GPU", "3"))
+            os.getenv("COEVO_BUYER_GPUS", os.getenv("COEVO_BUYER_GPU", "1"))
         ),
         "rollout": parse_gpu_ids(
             os.getenv(
                 "COEVO_BUYER_ROLLOUT_GPUS",
-                os.getenv("COEVO_BUYER_ROLLOUT_GPU", "4"),
+                os.getenv("COEVO_BUYER_ROLLOUT_GPU", "2"),
             )
         ),
     }
-    student_train = parse_gpu_ids(os.getenv("COEVO_STUDENT_TRAIN_GPUS", "5"))
-    buyer_train = parse_gpu_ids(os.getenv("COEVO_BUYER_TRAIN_GPUS", "5"))
+    policy_train = parse_gpu_ids(os.getenv("COEVO_POLICY_TRAIN_GPUS", "3"))
+    buyer_train = parse_gpu_ids(os.getenv("COEVO_BUYER_TRAIN_GPUS", "3"))
     allocated = {}
     overlap = []
     for role, gpu_ids in service_gpu_sets.items():
@@ -375,7 +369,7 @@ def check_gpus(checks: list[Check], require_all_free: bool) -> None:
                 overlap.append(f"GPU {gpu_id}: {allocated[gpu_id]} and {role}")
             allocated[gpu_id] = role
     for role, gpu_ids in (
-        ("student-trainer", student_train),
+        ("policy-trainer", policy_train),
         ("buyer-trainer", buyer_train),
     ):
         for gpu_id in gpu_ids:
@@ -388,7 +382,7 @@ def check_gpus(checks: list[Check], require_all_free: bool) -> None:
         "; ".join(overlap) or "no service/trainer overlap",
     )
 
-    requested = set().union(*service_gpu_sets.values(), student_train, buyer_train)
+    requested = set().union(*service_gpu_sets.values(), policy_train, buyer_train)
     missing = sorted(requested - inventory.keys())
     add(
         checks,
@@ -398,7 +392,7 @@ def check_gpus(checks: list[Check], require_all_free: bool) -> None:
     )
     allow_busy = os.getenv("COEVO_ALLOW_BUSY_GPUS") == "1"
     max_used = int(os.getenv("COEVO_MAX_USED_GPU_MIB_BEFORE_START", "2048"))
-    must_be_free = requested if require_all_free else student_train | buyer_train
+    must_be_free = requested if require_all_free else policy_train | buyer_train
     busy = {
         gpu_id: inventory[gpu_id]
         for gpu_id in must_be_free & inventory.keys()

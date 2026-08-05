@@ -14,13 +14,13 @@ from coevo.environment import tau2 as tau2_environment_module
 from coevo.environment.tau2 import dump_messages, load_messages
 
 
-def test_tau2_environment_loads_data_and_separates_role_information():
+def test_tau2_environment_uses_one_policy_for_student_and_teacher():
     endpoint = ModelEndpoint("unused", "http://127.0.0.1:1")
     environment = Tau2Environment(
         InfraConfig(
-            teacher=endpoint,
-            student=endpoint,
+            policy=endpoint,
             buyer_reference=endpoint,
+            teacher_hint_mode="none",
             domain="airline",
             task_split="train",
             task_id="1",
@@ -32,13 +32,13 @@ def test_tau2_environment_loads_data_and_separates_role_information():
     buyer = environment.policies.buyer_reference(raw_environment, environment.task)
 
     scenario = str(environment.task.user_scenario)
-    privileged_resolution = teacher.make_agent_instructions_from_actions()
-
     assert raw_environment.get_tools()
     assert scenario in buyer.system_prompt
     assert scenario not in student.system_prompt
-    assert privileged_resolution in teacher.system_prompt
-    assert privileged_resolution not in student.system_prompt
+    assert teacher.llm == student.llm == endpoint.litellm_model
+    assert teacher.llm_args == student.llm_args == endpoint.litellm_args
+    assert teacher.system_prompt == student.system_prompt
+    assert "<resolution_steps>" not in teacher.system_prompt
 
 
 def test_tau2_user_tool_call_runs_after_replaying_completed_history():
@@ -46,9 +46,9 @@ def test_tau2_user_tool_call_runs_after_replaying_completed_history():
     task_id = get_tasks("telecom", task_split_name="train")[0].id
     environment = Tau2Environment(
         InfraConfig(
-            teacher=endpoint,
-            student=endpoint,
+            policy=endpoint,
             buyer_reference=endpoint,
+            teacher_hint_mode="none",
             domain="telecom",
             task_split="train",
             task_id=task_id,
@@ -127,9 +127,9 @@ def test_tau2_v1_nl_assertions_use_configured_fixed_judge(monkeypatch):
     )
     environment = Tau2Environment(
         InfraConfig(
-            teacher=endpoint,
-            student=endpoint,
+            policy=endpoint,
             buyer_reference=endpoint,
+            teacher_hint_mode="none",
             nl_judge=judge,
             nl_judge_max_tokens=777,
             domain="retail",

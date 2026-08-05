@@ -31,7 +31,9 @@ class TurnCutoffScorer:
         if not candidates:
             return None
         history_before = history[:message_index]
-        selected = self.selector.select(history_before, message.content, candidates)
+        selected, hint_result = self.selector.select(
+            history_before, message.content, candidates
+        )
         cutoffs = []
         for item in selected:
             offset = item.candidate.char_offset
@@ -56,6 +58,7 @@ class TurnCutoffScorer:
             "message_index": message_index,
             "student_output": message.content,
             "history_before": dump_messages(history_before),
+            "teacher_hint": hint_result.to_dict() if hint_result else None,
             "cutoffs": cutoffs,
             "correctability": turn_score,
         }

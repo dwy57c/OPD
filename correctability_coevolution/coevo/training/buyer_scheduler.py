@@ -13,6 +13,47 @@ from coevo.rewards import trajectory_buyer_reward, transition_validity
 from coevo.rollout import build_cutoff_scorer
 
 
+def visible_buyer_content(content: str | None) -> str:
+    """Remove Qwen-style private thinking before exposing a Buyer turn.
+
+    Swift normally returns thinking in ``reasoning_content`` and only the final
+    answer in ``content``. Some rollout backends instead return the serialized
+    ``<think>...</think>`` block in ``content``. Handle both representations so
+    private reasoning can remain in the sampled token sequence without entering
+    the tau2 history seen by Student, Teacher continuations, or scorers.
+
+    An unclosed thinking block is treated as private through end-of-string. This
+    deliberately produces an empty visible action when the model never reaches
+    its answer, allowing the existing validity gate to reject that rollout.
+    """
+    if not content:
+        return ""
+
+    lower_content = content.lower()
+    visible_parts = []
+    cursor = 0
+    while True:
+        think_start = lower_content.find("<think>", cursor)
+        if think_start < 0:
+            visible_parts.append(content[cursor:])
+            break
+        visible_parts.append(content[cursor:think_start])
+        think_end = lower_content.find("</think>", think_start + len("<think>"))
+        if think_end < 0:
+            break
+        cursor = think_end + len("</think>")
+
+    # A few OpenAI-compatible backends omit the opening tag because the template
+    # supplied it as a generation prefix, but still return the closing tag.
+    visible = "".join(visible_parts)
+    while True:
+        orphan_close = visible.lower().find("</think>")
+        if orphan_close < 0:
+            break
+        visible = visible[:orphan_close] + visible[orphan_close + len("</think>") :]
+    return visible.strip()
+
+
 class Tau2BuyerScheduler(MultiTurnScheduler):
     """Run every Buyer action against the matching task environment before reward."""
 
@@ -95,7 +136,7 @@ class Tau2BuyerScheduler(MultiTurnScheduler):
         validity_score = float(data.get("trajectory_validity", 1.0))
         try:
             buyer_message = environment.buyer_message(
-                response_choice.message.content,
+                visible_buyer_content(response_choice.message.content),
                 response_choice.message.tool_calls,
             )
         except (TypeError, ValueError):

@@ -64,7 +64,7 @@ class Tau2Environment:
             raise ValueError(
                 f"Task {config.domain}/{config.task_split}/{config.task_id} has no "
                 "oracle actions and "
-                "cannot be used for privileged-Teacher correctability"
+                "cannot be used for closed-model-hinted Teacher correctability"
             )
         self.policies = Tau2PolicyFactory(config)
 
@@ -145,7 +145,7 @@ class Tau2Environment:
                 domain=self.config.domain,
             )
 
-        judge = self.config.nl_judge or self.config.teacher
+        judge = self.config.nl_judge or self.config.policy
         judge_args = {
             **judge.litellm_args,
             "temperature": 0.0,

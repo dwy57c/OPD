@@ -62,8 +62,8 @@ def main() -> None:
         python_paths.append(env["PYTHONPATH"])
     env["PYTHONPATH"] = ":".join(python_paths)
     model_root = env.get("COEVO_MODEL_ROOT", "/models")
-    student_model = env.get("COEVO_STUDENT_PATH", f"{model_root}/Qwen3-4B")
-    buyer_model = env.get("COEVO_BUYER_PATH", f"{model_root}/Qwen3-4B")
+    policy_model = env.get("COEVO_POLICY_PATH", f"{model_root}/policy")
+    buyer_model = env.get("COEVO_BUYER_PATH", str(policy_model))
     output_dir = args.output_dir.expanduser()
     if not output_dir.is_absolute():
         output_dir = (Path.cwd() / output_dir).resolve()
@@ -72,7 +72,7 @@ def main() -> None:
     if args.start_services:
         start_env = dict(
             env,
-            COEVO_STUDENT_PATH=str(student_model),
+            COEVO_POLICY_PATH=str(policy_model),
             COEVO_BUYER_PATH=str(buyer_model),
         )
         run(["bash", "scripts/start_servers.sh"], start_env)
@@ -92,7 +92,7 @@ def main() -> None:
             "task_ids": args.task_ids,
             "student_steps": args.student_steps,
             "buyer_steps": args.buyer_steps,
-            "student_base_model": str(student_model),
+            "policy_base_model": str(policy_model),
             "buyer_base_model": str(buyer_model),
         }
         manifest_path = round_dir / "manifest.json"
@@ -110,9 +110,9 @@ def main() -> None:
                 env,
             )
 
-            manifest["phase"] = "student_training"
+            manifest["phase"] = "policy_training"
             write_manifest(manifest_path, manifest)
-            student_env = dict(env, COEVO_STUDENT_BASE_MODEL=str(student_model))
+            student_env = dict(env, COEVO_POLICY_BASE_MODEL=str(policy_model))
             run(
                 [
                     "bash",
@@ -123,21 +123,21 @@ def main() -> None:
                 ],
                 student_env,
             )
-            next_student_model = str(latest_checkpoint(student_out))
-            manifest["student_checkpoint"] = next_student_model
+            next_policy_model = str(latest_checkpoint(student_out))
+            manifest["policy_checkpoint"] = next_policy_model
 
-            manifest["phase"] = "student_refresh"
+            manifest["phase"] = "policy_refresh"
             write_manifest(manifest_path, manifest)
-            run(["bash", "scripts/stop_role.sh", "student"], env)
+            run(["bash", "scripts/stop_role.sh", "policy"], env)
             try:
                 run(
-                    ["bash", "scripts/start_role.sh", "student", next_student_model],
+                    ["bash", "scripts/start_role.sh", "policy", next_policy_model],
                     env,
                 )
             except Exception:
-                run(["bash", "scripts/start_role.sh", "student", student_model], env)
+                run(["bash", "scripts/start_role.sh", "policy", policy_model], env)
                 raise
-            student_model = next_student_model
+            policy_model = next_policy_model
 
             manifest["phase"] = "buyer_training"
             write_manifest(manifest_path, manifest)

@@ -4,6 +4,7 @@ from openai import OpenAI
 from tau2.data_model.message import AssistantMessage, Message
 
 from coevo.environment import Tau2Environment
+from coevo.models.hinted_teacher import HintedTeacherAgent
 from coevo.rollout.views import student_view
 
 
@@ -24,12 +25,15 @@ class PrefixBranchRunner:
             agent = self.environment.policies.teacher(
                 raw_environment, self.environment.task_at(history)
             )
-            endpoint = self.environment.config.teacher
+            if not isinstance(agent, HintedTeacherAgent):
+                raise ValueError("Teacher prefix continuation requires closed-model hints")
+            system_prompt, _ = agent.hinted_system_prompt_for_history(history)
         else:
             agent = self.environment.policies.student(raw_environment)
-            endpoint = self.environment.config.student
+            system_prompt = agent.system_prompt
+        endpoint = self.environment.config.policy
 
-        messages = student_view(agent.system_prompt, history)
+        messages = student_view(system_prompt, history)
         client = OpenAI(
             base_url=endpoint.base_url.rstrip("/") + "/v1", api_key="EMPTY"
         )

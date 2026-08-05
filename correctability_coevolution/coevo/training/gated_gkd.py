@@ -55,6 +55,7 @@ class CorrectabilityGKDTrainer(GKDTrainer):
         encoded = super()._prepare_batch_inputs(inputs, encode_prompt_only)
         for key in (
             "teacher_prompt",
+            "teacher_hint",
             "correctability",
             "cutoff_count",
             "domain",

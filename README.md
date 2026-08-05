@@ -12,24 +12,27 @@
 
 ## 1. 核心方法
 
-系统包含三个模型和一个非模型环境：
+系统包含一个共享策略模型、一个 Buyer、一个闭源 hinter 和非模型环境：
 
 ```text
 Trainable Buyer / User
         │ 生成用户动作
         ▼
-  τ² environment ◄────► Trainable Student
-        │                         │
-        │                         │ 完整 Student turn
-        │                         ▼
-        └────────────── Fixed privileged Teacher
-                                  │
-                                  ▼
-                            τ² verifier
+  τ² environment ◄────► Trainable shared Policy
+        │                    │              │
+        │               Student view   Teacher view
+        │                                  ▲
+        │                         private hint only
+        └──────────── Closed-model hinter ─┘
+                             │
+                             ▼
+                       τ² verifier
 ```
 
-- **Teacher**：固定模型，拥有 oracle resolution plan 等特权信息；负责选择 cutoff，并提供 token-level 蒸馏分布。
-- **Student**：可训练模型；只接受 correctability-gated OPD，不使用任务 reward 做 RL。
+- **Shared Policy**：Student 与 Teacher 是同一个模型、同一份权重。Student 只看正常
+  上下文；Teacher 每轮额外收到闭源模型生成的私有 hint。
+- **Closed-model hinter**：可读取 oracle actions、policy、工具和当前上下文，生成
+  结构化 hint；oracle 不直接暴露给 Teacher policy。
 - **Buyer**：可训练的闭环用户策略；观察 Student 的回答后继续生成用户动作，使用 GRPO 更新。
 - **\(\tau^2\) environment / verifier**：执行工具、维护数据库状态并判断任务是否成功，不是第四个模型。
 
@@ -56,12 +59,13 @@ Buyer reward = validity × trajectory mean correctability
 Student 和 Buyer 不在同一个 optimizer step 中同时更新。完整训练按 round 交替进行：
 
 ```text
-收集当前 Student/Buyer 轨迹
-  -> Teacher 选择 Student turn 内的 semantic cutoffs
+收集当前 Policy(Student view)/Buyer 轨迹
+  -> 闭源 hinter 生成私有 hint
+  -> 同一个 Policy(Teacher view) 选择 semantic cutoffs
   -> Teacher/Student 从相同 prefix 分叉到 terminal
   -> verifier 计算 qT、qS、C(h)
-  -> gated OPD 更新 Student
-  -> 在更新后的 Student 下在线 rollout
+  -> gated OPD 更新共享 Policy
+  -> 在更新后的 Policy(Student view) 下在线 rollout
   -> masked GRPO 更新 Buyer
   -> 进入下一 round
 ```
@@ -131,8 +135,9 @@ OPD/
 
 | 文件 | 作用 |
 |---|---|
-| `coevo/config.py` | 定义 Teacher、Student、Buyer endpoint，以及 domain、task split、task、cutoff、continuation、prior、seed 等实验参数；支持从环境变量读取 |
-| `coevo/models/tau2_factory.py` | 将三个 endpoint 转成 \(\tau^2\) policy；Teacher 使用 `LLMGTAgent` 获取 oracle plan，Student 使用 `LLMAgent`，Buyer reference 使用 `UserSimulator` |
+| `coevo/config.py` | 定义唯一 Policy、Buyer、闭源 hinter 和 judge endpoint，以及实验参数；配置结构上禁止 Teacher/Student 使用不同 policy model |
+| `coevo/models/tau2_factory.py` | Student 和 Teacher 都构造自同一个 Policy endpoint；Teacher 仅包一层私有 hint，Buyer reference 使用 `UserSimulator` |
+| `coevo/models/hinted_teacher.py` | 闭源模型根据当前上下文生成结构化 hint，并把 hint 私有注入共享 Policy；oracle steps 不直接进入 Policy prompt |
 | `coevo/models/__init__.py` | 导出模型工厂 |
 
 ### 4.3 环境层
@@ -149,7 +154,7 @@ OPD/
 | 文件 | 作用 |
 |---|---|
 | `coevo/cutoff/boundaries.py` | 在已经完成的 Student 文本 turn 内寻找可续写的句子边界；不会在任意字符位置截断 |
-| `coevo/cutoff/teacher_selector.py` | 将完整 Student turn、历史、oracle plan 和候选边界交给固定 Teacher；Teacher 只能从合法 candidate ID 中选择 Top-K |
+| `coevo/cutoff/teacher_selector.py` | 将完整 Student turn、历史、私有 hint 和候选边界交给共享 Policy 的 Teacher view；只能选择合法 candidate ID |
 | `coevo/cutoff/__init__.py` | 导出 cutoff 数据结构和 selector |
 
 Teacher 的选择理由只用于记录，不直接进入 reward。真正的 reward 来自分叉 continuation 的 verifier 结果。
@@ -201,21 +206,21 @@ Student 与 Buyer 的 mask 边界不同：
 
 | 文件 | 作用 |
 |---|---|
-| `scripts/start_role.sh` | 按 role 启动 Teacher、Student、Buyer reference 或 Swift rollout server，并记录 PID |
-| `scripts/start_servers.sh` | 一次启动四个服务角色 |
+| `scripts/start_role.sh` | 按 role 启动共享 Policy、Buyer reference 或 Swift rollout server，并记录 PID；`teacher`/`student` 独立服务已禁用 |
+| `scripts/start_servers.sh` | 一次启动 Policy、Buyer reference、Buyer rollout 三个服务角色 |
 | `scripts/preflight.py` | 检查 Python、依赖、固定版本、模型、端口、服务和 GPU 布局 |
 | `scripts/bootstrap_upstreams.sh` | sparse checkout 固定版本 τ²-Bench 和 ms-swift；可选安装 |
 | `scripts/download_qwen3_4b.sh` | 通过 ModelScope 下载 Qwen3-4B，并按固定 Hugging Face revision 对应的权重、配置与 tokenizer SHA-256 校验 |
 | `scripts/wait_for_servers.py` | 轮询 OpenAI-compatible `/v1/models`，直到服务 ready 或超时 |
 | `scripts/stop_role.sh` | 只停止本项目 PID 文件记录的指定角色 |
-| `scripts/stop_servers.sh` | 停止四个本项目服务 |
+| `scripts/stop_servers.sh` | 停止 Policy、Buyer reference 和 Buyer rollout 三个本项目服务 |
 | `scripts/collect_smoke.py` | 通用数据收集 CLI；读取环境变量并输出数据集摘要 |
 | `scripts/collect_round.py` | 完整 round 的收集入口，目前复用 `collect_smoke.py` 的参数和实现 |
 | `scripts/train_student_smoke.sh` | 历史一步 LoRA GKD/OPD smoke |
 | `scripts/train_buyer_smoke.sh` | 历史一步 LoRA masked-GRPO smoke |
 | `scripts/train_student_full.sh` | Student 全参 GKD/OPD 训练入口 |
 | `scripts/train_buyer_full.sh` | Buyer 全参 GRPO 训练入口，使用独立 Swift rollout server |
-| `scripts/run_coevolution.py` | round controller：收集数据、更新 Student、刷新 Student 服务、更新 Buyer、刷新 Buyer 服务并写 manifest |
+| `scripts/run_coevolution.py` | round controller：收集数据、更新并刷新共享 Policy、更新 Buyer、刷新 Buyer 服务并写 manifest |
 | `scripts/evaluate_student.sh` | 用固定、独立的 user simulator 和原生 τ² verifier 评测 Student；训练后的 Buyer 不参与最终评测 |
 
 ### 4.10 测试
@@ -248,7 +253,7 @@ Student 与 Buyer 的 mask 边界不同：
 
 ```bash
 cp .env.example .env
-# 编辑 .env 中的 COEVO_TEACHER_MODEL_DIR 和 COEVO_STUDENT_MODEL_DIR
+# 编辑 .env 中的 COEVO_POLICY_MODEL_DIR 与 COEVO_TEACHER_HINT_*
 ./correctability_coevolution/scripts/bootstrap_upstreams.sh
 docker compose build coevo
 docker compose up -d coevo
@@ -268,11 +273,10 @@ python scripts/preflight.py start
 
 | 角色 | GPU | 端口 |
 |---|---:|---:|
-| Teacher Qwen3-32B TP=2 | 0,1 | 8000 |
-| Student Qwen3-4B | 2 | 8001 |
-| 固定 Buyer reference Qwen3-4B | 3 | 8002 |
-| Buyer Swift rollout | 4 | 8003 |
-| 当前 phase Trainer | 5 | - |
+| Student/Teacher 共享 Policy | 0 | 8000 |
+| 固定 Buyer reference | 1 | 8002 |
+| Buyer Swift rollout | 2 | 8003 |
+| 当前 phase Trainer | 3 | - |
 
 ### 6.3 只收集数据
 
@@ -325,8 +329,10 @@ COEVO_EVAL_SAVE_TO=student_gpt41_airline \
 
 | 环境变量 | 默认值 | 作用 |
 |---|---|---|
-| `COEVO_TEACHER_URL` | `http://127.0.0.1:8000` | Teacher endpoint |
-| `COEVO_STUDENT_URL` | `http://127.0.0.1:8001` | Student endpoint |
+| `COEVO_POLICY_URL` | `http://127.0.0.1:8000` | Student/Teacher 共享 Policy endpoint |
+| `COEVO_TEACHER_HINT_MODE` | `closed_model` | Teacher 是否接收闭源私有 hint |
+| `COEVO_TEACHER_HINT_MODEL` | `gemini-3.1-pro-preview` | 私有 hint 模型 |
+| `COEVO_TEACHER_HINT_URL` | 无 | 闭源 hinter 的 OpenAI-compatible endpoint |
 | `COEVO_BUYER_URL` | `http://127.0.0.1:8002` | Buyer reference endpoint |
 | `COEVO_DOMAIN` | `airline` | \(\tau^2\) domain |
 | `COEVO_TASK_SPLIT` | `train` | 共进化数据使用的官方 task split |
@@ -359,20 +365,20 @@ COEVO_EVAL_SAVE_TO=student_gpt41_airline \
 
 该 smoke 使用的是早期 turn-start 单 cutoff，不代表当前 Teacher-selected multi-cutoff 全量训练已经完成。
 
-### 当前 v1 multi-cutoff 代码
+### 旧 v1 multi-cutoff GPU 验收
 
-`FULL_INFRA.md` 记录：
+`FULL_INFRA.md` 记录的是 shared-policy refactor 之前的 GPU 验收：
 
 - Ruff 通过；
 - 14 个单元与 τ² v1 集成测试通过；
 - Swift plugin import 和 full-tuner CLI preflight 通过；
-- Teacher、Student、Buyer reference 和 Buyer rollout 四个真实服务通过；
+- 独立 Teacher、Student、Buyer reference 和 Buyer rollout 四个旧服务通过；
 - 官方 v1 `airline/train` task 1 的真实采集通过，覆盖 v1 `MultiToolMessage`；
 - 新的 Teacher-selected multi-cutoff Student gated-GKD 与 Buyer masked-GRPO 均完成
   1-step LoRA 并保存 checkpoint；产物位于
   `correctability_coevolution/artifacts/v1_infra_smoke/` 和
   `correctability_coevolution/artifacts/v1_buyer_reward_smoke/`（默认被 Git 忽略）；
-- v1 retail 的 NL-assertion reward basis 已接入固定 Teacher judge；服务按独立 process
+- v1 retail 的 NL-assertion reward basis 已接入固定 NL judge；服务按独立 process
   group 启停，实测可完整清除 vLLM 子进程而不影响其他角色。
 
 Student 最小样本为 `loss=0.0193512`、`grad_norm=0.0718474`；Retail Buyer 单轮
@@ -392,8 +398,8 @@ Student 最小样本为 `loss=0.0193512`、`grad_norm=0.0718474`；Retail Buyer 
 - `MAD-OPD/outputs/` 和 `MAD-OPD/.cache/`；
 - `ms-swift/`、`tau2-bench/`、`MAD-OPD/` 的 `.git/`。
 
-模型权重不在本仓库中；Compose 默认把宿主机模型分别只读挂载为
-`/models/teacher` 和 `/models/student`。
+模型权重不在本仓库中；Compose 默认把 Student/Teacher 共享 checkpoint 只读挂载为
+`/models/policy`。
 
 ## 10. 开发约束
 

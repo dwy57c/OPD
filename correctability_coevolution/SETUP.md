@@ -11,16 +11,16 @@
 cp .env.example .env
 ```
 
-至少修改以下两个宿主机目录；它们可以位于不同磁盘：
+设置 Student/Teacher 共享的唯一 policy checkpoint 目录：
 
 ```text
-COEVO_TEACHER_MODEL_DIR=/宿主机上的/Qwen3-32B
-COEVO_STUDENT_MODEL_DIR=/宿主机上的/Qwen3-4B
+COEVO_POLICY_MODEL_DIR=/宿主机上的/Qwen3-4B
 ```
 
-Compose 会分别将它们只读挂载到 `/models/teacher` 和 `/models/student`。
-Buyer 默认复用 Student 的 Qwen3-4B；若不使用容器，可直接覆盖 `.env` 中的
-`COEVO_TEACHER_PATH`、`COEVO_STUDENT_PATH` 和 `COEVO_BUYER_PATH`。
+Compose 将它只读挂载到 `/models/policy`。Student 与 Teacher 都调用这一模型；
+Teacher 的额外能力来自 `COEVO_TEACHER_HINT_*` 配置的闭源 hinter。Buyer 默认也从
+该 checkpoint 初始化；若不使用容器，可覆盖 `.env` 中的 `COEVO_POLICY_PATH` 和
+`COEVO_BUYER_PATH`。
 
 如果本机缺少 Qwen3-4B，可在构建运行镜像后从宿主机下载。脚本会继承已有代理
 变量、不需要 sudo，并校验权重、配置与 tokenizer 的 SHA-256 是否与固定
@@ -86,7 +86,7 @@ python scripts/preflight.py python
 python scripts/preflight.py start
 ```
 
-服务启动后检查四个 endpoint 和 Trainer GPU：
+服务启动后检查三个 endpoint 和 Trainer GPU：
 
 ```bash
 python scripts/preflight.py services
@@ -113,7 +113,7 @@ python scripts/run_coevolution.py \
 `run_coevolution.py` 会持续写 `manifest.json`；失败时记录 phase 和异常，并在模型
 服务刷新失败时尝试恢复上一版 checkpoint。
 
-本机 2026-08-03 的最小真实验收已通过：四个服务启动、官方 v1
+本机 2026-08-03 的最小真实验收已通过：旧架构的四个服务启动、官方 v1
 `airline/train` task 1 采集、Student gated-GKD 1 step，以及官方
 `retail/train` task 0 的 Buyer masked-GRPO 1 step。产物位于
 `artifacts/v1_infra_smoke/` 和 `artifacts/v1_buyer_reward_smoke/`。Buyer 验收得到
@@ -121,15 +121,15 @@ python scripts/run_coevolution.py \
 验收时间；正式入口仍是 `train_student_full.sh` / `train_buyer_full.sh` 的全参训练。
 
 当前固定 vLLM 0.19.1 在这台 A100 节点上使用 2-way TP custom all-reduce 会在 KV
-cache profiling 阶段触发 CUDA `invalid argument`，所以 Teacher 启动脚本显式传入
+cache profiling 阶段触发 CUDA `invalid argument`，所以 Policy 启动脚本显式传入
 `--disable-custom-all-reduce` 并使用 NCCL。Swift 对本地 Qwen3 目录也显式设置
 `--model_type qwen3 --template qwen3_nothinking`，不依赖自动推断。
 Buyer completion 默认上限为 512 token；此前 128 token 的真实 smoke 会让全部样本以
 `finish_reason=length` 结束，只能验证截断保护分支，无法验收在线 τ² scorer。可用
 `COEVO_BUYER_MAX_COMPLETION_LENGTH` 调整，但不应把截断样本当成有效 reward。
 
-v1 retail/telecom 的部分任务将 NL assertion 放入 reward basis。训练阶段默认用固定
-Teacher 作为 judge，并用 `COEVO_NL_JUDGE_MODEL`、`COEVO_NL_JUDGE_URL` 和
+v1 retail/telecom 的部分任务将 NL assertion 放入 reward basis。judge 与 Teacher
+hint 是两条独立路径，并用 `COEVO_NL_JUDGE_MODEL`、`COEVO_NL_JUDGE_URL` 和
 `COEVO_NL_JUDGE_MAX_TOKENS` 配置。最终 benchmark 仍使用 τ² 原生 evaluator 的固定
 外部 judge。每个服务以独立 Unix process group 启动，`stop_role.sh` 会同时停止父服务
 和 `VLLM::EngineCore` 子进程。
@@ -155,15 +155,14 @@ v1.0.0 官方示例使用 `gpt-4.1` 作为 user simulator，模型可由
 
 ## 7. 可配置资源
 
-默认布局占用六张 GPU：
+默认布局占用四张 GPU；Policy 与 Buyer Trainer 按 phase 顺序运行：
 
 | 角色 | 默认 GPU | 默认端口 |
 |---|---:|---:|
-| Teacher TP | 0,1 | 8000 |
-| Student service | 2 | 8001 |
-| Buyer reference | 3 | 8002 |
-| Buyer rollout | 4 | 8003 |
-| 当前 phase Trainer | 5 | - |
+| Student/Teacher 共享 Policy | 0 | 8000 |
+| Buyer reference | 1 | 8002 |
+| Buyer rollout | 2 | 8003 |
+| 当前 phase Trainer | 3 | - |
 
 GPU、端口、模型路径、Buyer 最大动作数都可以通过 `.env.example` 中对应的
 `COEVO_*` 变量覆盖。Student 和 Buyer Trainer 按 phase 顺序运行，可以使用同一张

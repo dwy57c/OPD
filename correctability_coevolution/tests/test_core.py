@@ -3,6 +3,7 @@ import torch
 from tau2.data_model.message import AssistantMessage, UserMessage
 
 from coevo.cutoff import SelectedCutoff, semantic_boundaries
+from coevo.models.hinted_teacher import TeacherHintResult
 from coevo.rewards.buyer import buyer_reward, trajectory_buyer_reward
 from coevo.rewards.correctability import CorrectabilityResult
 from coevo.rollout.cutoff_scorer import TurnCutoffScorer
@@ -38,7 +39,16 @@ def test_semantic_boundaries_are_inside_completed_turn():
 def test_turn_score_means_teacher_selected_cutoffs():
     class Selector:
         def select(self, history, output, candidates):
-            return [SelectedCutoff(candidate, "test") for candidate in candidates[:2]]
+            hint = TeacherHintResult(
+                hint={"next_step": "Inspect the reservation."},
+                model="closed-model",
+                latency_ms=1,
+                sha256="hint",
+            )
+            return (
+                [SelectedCutoff(candidate, "test") for candidate in candidates[:2]],
+                hint,
+            )
 
     class Estimator:
         def estimate(self, history):
@@ -58,6 +68,7 @@ def test_turn_score_means_teacher_selected_cutoffs():
     scored = TurnCutoffScorer(Selector(), Estimator()).score_turn(history, 1)
     assert len(scored["cutoffs"]) == 2
     assert scored["correctability"] == pytest.approx(4 / 9)
+    assert scored["teacher_hint"]["hint"]["next_step"] == "Inspect the reservation."
     assert all(len(item["state_hash"]) == 64 for item in scored["cutoffs"])
 
 

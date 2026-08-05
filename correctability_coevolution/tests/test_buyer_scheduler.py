@@ -1,6 +1,8 @@
 import asyncio
 from copy import deepcopy
+from types import SimpleNamespace
 
+import pytest
 from swift.infer_engine.protocol import (
     ChatCompletionResponse,
     ChatCompletionResponseChoice,
@@ -9,10 +11,15 @@ from swift.infer_engine.protocol import (
     RolloutInferRequest,
     UsageInfo,
 )
-from tau2.data_model.message import AssistantMessage, ToolMessage, UserMessage
+from tau2.data_model.message import AssistantMessage, ToolCall, ToolMessage, UserMessage
 
 from coevo.training import buyer_scheduler as scheduler_module
-from coevo.training.buyer_scheduler import Tau2BuyerScheduler
+from coevo.training.buyer_scheduler import Tau2BuyerScheduler, visible_buyer_content
+
+
+@pytest.fixture(autouse=True)
+def disable_external_hinter_for_scheduler_unit_tests(monkeypatch):
+    monkeypatch.setenv("COEVO_TEACHER_HINT_MODE", "none")
 
 
 def make_response(content: str, token_id: int):
@@ -28,6 +35,15 @@ def make_response(content: str, token_id: int):
         ],
         usage=UsageInfo(prompt_tokens=1, completion_tokens=1, total_tokens=2),
     )
+
+
+def test_visible_buyer_content_removes_private_thinking():
+    assert visible_buyer_content("<think>secret plan</think>\nI need help.") == "I need help."
+    assert visible_buyer_content("<THINK>secret</THINK>\nFinal answer") == "Final answer"
+    assert visible_buyer_content("</think>\nVisible answer") == "Visible answer"
+    assert visible_buyer_content("</ThInK>\nVisible answer") == "Visible answer"
+    assert visible_buyer_content("<think>unfinished reasoning") == ""
+    assert visible_buyer_content("ordinary user message") == "ordinary user message"
 
 
 def test_server_scheduler_executes_final_buyer_action(monkeypatch):
@@ -141,9 +157,12 @@ def test_scheduler_uses_domain_split_and_task_from_each_row(monkeypatch):
 
 
 def test_buyer_action_applies_environment_transition_validity(monkeypatch):
+    buyer_contents = []
+
     class Environment:
         @staticmethod
         def buyer_message(content, tool_calls):
+            buyer_contents.append(content)
             return UserMessage(role="user", content=content)
 
         @staticmethod
@@ -175,7 +194,9 @@ def test_buyer_action_applies_environment_transition_validity(monkeypatch):
         messages=[{"role": "user", "content": "hello"}],
         data_dict={"tau_history": []},
     )
-    response_choice = make_response("I still need help.", 9).choices[0]
+    response_choice = make_response(
+        "<think>I should remain persistent.</think>\nI still need help.", 9
+    ).choices[0]
 
     infos, finished = scheduler._apply_buyer_action(
         request, response_choice, append_observation=True
@@ -185,7 +206,105 @@ def test_buyer_action_applies_environment_transition_validity(monkeypatch):
     assert infos["validity"] == 0.0
     assert infos["turn_correctability"] == [0.75]
     assert infos["correctability_reward"] == 0.0
+    assert buyer_contents == ["I still need help."]
+    assert request.data_dict["tau_history"][0]["content"] == "I still need help."
     assert request.messages[-1] == {"role": "user", "content": "Please try again."}
+
+
+def test_unclosed_thinking_is_an_invalid_empty_buyer_action(monkeypatch):
+    class Environment:
+        @staticmethod
+        def buyer_message(content, tool_calls):
+            return UserMessage(role="user", content=content or None)
+
+        @staticmethod
+        def buyer_stopped(message):
+            return False
+
+        @staticmethod
+        def advance_student(history):
+            raise AssertionError("private thinking must not be sent to Student")
+
+    scheduler = Tau2BuyerScheduler(infer_engine=object(), max_turns=2)
+    monkeypatch.setattr(scheduler, "_context", lambda data: (Environment(), object()))
+    request = RolloutInferRequest(
+        messages=[{"role": "user", "content": "hello"}],
+        data_dict={"tau_history": []},
+    )
+    response_choice = make_response("<think>unfinished reasoning", 9).choices[0]
+
+    infos, finished = scheduler._apply_buyer_action(
+        request, response_choice, append_observation=True
+    )
+
+    assert finished is True
+    assert infos["validity"] == 0.0
+    assert infos["correctability_reward"] == 0.0
+    assert request.data_dict["tau_history"][0]["content"] is None
+
+
+def test_thinking_is_hidden_without_dropping_buyer_tool_calls(monkeypatch):
+    received = []
+    raw_tool_calls = [object()]
+
+    class Environment:
+        @staticmethod
+        def buyer_message(content, tool_calls):
+            received.append((content, tool_calls))
+            return UserMessage(
+                role="user",
+                content=content or None,
+                tool_calls=[
+                    ToolCall(
+                        id="buyer-call",
+                        name="lookup",
+                        arguments={},
+                        requestor="user",
+                    )
+                ],
+            )
+
+        @staticmethod
+        def buyer_stopped(message):
+            return False
+
+        @staticmethod
+        def execute_user_tools(history):
+            return [
+                *history,
+                ToolMessage(
+                    id="buyer-call",
+                    role="tool",
+                    content="lookup result",
+                    requestor="user",
+                    error=False,
+                ),
+            ]
+
+    scheduler = Tau2BuyerScheduler(infer_engine=object(), max_turns=2)
+    monkeypatch.setattr(scheduler, "_context", lambda data: (Environment(), object()))
+    request = RolloutInferRequest(
+        messages=[{"role": "user", "content": "hello"}],
+        data_dict={"tau_history": []},
+    )
+    response_choice = SimpleNamespace(
+        message=SimpleNamespace(
+            content="<think>choose a user tool</think>", tool_calls=raw_tool_calls
+        )
+    )
+
+    infos, finished = scheduler._apply_buyer_action(
+        request, response_choice, append_observation=True
+    )
+
+    assert finished is False
+    assert infos["validity"] == 1.0
+    assert received == [("", raw_tool_calls)]
+    assert request.messages[-1] == {
+        "role": "tool",
+        "content": "lookup result",
+        "tool_call_id": "buyer-call",
+    }
 
 
 def test_truncated_buyer_output_is_invalid_and_not_executed(monkeypatch):

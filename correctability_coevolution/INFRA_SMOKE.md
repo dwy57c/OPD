@@ -109,6 +109,9 @@ Buyer 训练使用 Swift `MultiTurnScheduler`：
 
 - Buyer 的每轮真实采样 `response_token_ids` 返回给 Trainer；
 - 对应 `response_loss_mask` 全为 1；
+- Buyer 默认启用 Qwen3 thinking；reasoning token 保留在采样序列中参与训练；
+- 进入 τ² history 前只提取最终可见 user utterance，内部 reasoning 不会传给 Student、Teacher continuation 或 scorer；
+- 如果后端把 reasoning 序列化为 `<think>...</think>`，scheduler 会剥离该区段；未闭合的 think 区段视为没有产生有效用户动作；
 - Student 回复作为 Buyer 视角的 `role=user` 插入历史，不进入 response token IDs；
 - τ² tool observation 使用 `role=tool`，不进入 Buyer loss；
 - Teacher continuation 只用于计算 reward，从不进入 Buyer 训练序列。

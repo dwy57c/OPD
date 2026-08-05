@@ -14,38 +14,28 @@ RUNTIME=$COEVO_ROOT/runtime
 mkdir -p "$RUNTIME/logs" "$RUNTIME/pids"
 
 case "$ROLE" in
-  teacher)
-    GPU=${COEVO_TEACHER_GPUS:-0,1}
-    PORT=${COEVO_TEACHER_PORT:-8000}
-    IFS=, read -r -a TEACHER_GPU_IDS <<< "$GPU"
-    TP_SIZE=${COEVO_TEACHER_TP_SIZE:-${#TEACHER_GPU_IDS[@]}}
-    SERVED_MODEL=${COEVO_TEACHER_MODEL:-Qwen3-32B}
+  policy)
+    GPU=${COEVO_POLICY_GPUS:-0}
+    PORT=${COEVO_POLICY_PORT:-8000}
+    IFS=, read -r -a POLICY_GPU_IDS <<< "$GPU"
+    TP_SIZE=${COEVO_POLICY_TP_SIZE:-${#POLICY_GPU_IDS[@]}}
+    SERVED_MODEL=${COEVO_POLICY_MODEL:-Qwen3-4B}
     CUDA_VISIBLE_DEVICES="$GPU" nohup setsid python -m vllm.entrypoints.openai.api_server \
       --model "$MODEL_PATH" --served-model-name "$SERVED_MODEL" \
       --tensor-parallel-size "$TP_SIZE" --port "$PORT" \
-      --max-model-len "${COEVO_TEACHER_MAX_MODEL_LEN:-16384}" \
-      --gpu-memory-utilization "${COEVO_TEACHER_GPU_MEMORY_UTILIZATION:-0.88}" \
-      --max-num-seqs "${COEVO_TEACHER_MAX_NUM_SEQS:-8}" --max-logprobs 20 \
+      --max-model-len "${COEVO_POLICY_MAX_MODEL_LEN:-16384}" \
+      --gpu-memory-utilization "${COEVO_POLICY_GPU_MEMORY_UTILIZATION:-0.88}" \
+      --max-num-seqs "${COEVO_POLICY_MAX_NUM_SEQS:-8}" --max-logprobs 20 \
       --disable-custom-all-reduce \
       --enable-auto-tool-choice --tool-call-parser hermes \
       > "$RUNTIME/logs/$ROLE_KEY.log" 2>&1 &
     ;;
-  student)
-    GPU=${COEVO_STUDENT_GPU:-2}
-    PORT=${COEVO_STUDENT_PORT:-8001}
-    SERVED_MODEL=${COEVO_STUDENT_MODEL:-Qwen3-4B}
-    CUDA_VISIBLE_DEVICES="$GPU" nohup setsid python -m vllm.entrypoints.openai.api_server \
-      --model "$MODEL_PATH" --served-model-name "$SERVED_MODEL" \
-      --port "$PORT" \
-      --max-model-len "${COEVO_STUDENT_MAX_MODEL_LEN:-16384}" \
-      --gpu-memory-utilization \
-        "${COEVO_STUDENT_GPU_MEMORY_UTILIZATION:-0.80}" \
-      --max-num-seqs "${COEVO_STUDENT_MAX_NUM_SEQS:-8}" \
-      --enable-auto-tool-choice --tool-call-parser hermes \
-      > "$RUNTIME/logs/$ROLE_KEY.log" 2>&1 &
+  teacher|student)
+    echo "role '$ROLE' was removed; Student and Teacher both use role 'policy'" >&2
+    exit 2
     ;;
   buyer)
-    GPU=${COEVO_BUYER_GPUS:-${COEVO_BUYER_GPU:-3}}
+    GPU=${COEVO_BUYER_GPUS:-${COEVO_BUYER_GPU:-1}}
     IFS=, read -r -a BUYER_GPU_IDS <<< "$GPU"
     TP_SIZE=${COEVO_BUYER_TP_SIZE:-${#BUYER_GPU_IDS[@]}}
     PORT=${COEVO_BUYER_PORT:-8002}
@@ -61,7 +51,7 @@ case "$ROLE" in
       > "$RUNTIME/logs/$ROLE_KEY.log" 2>&1 &
     ;;
   rollout)
-    GPU=${COEVO_BUYER_ROLLOUT_GPUS:-${COEVO_BUYER_ROLLOUT_GPU:-4}}
+    GPU=${COEVO_BUYER_ROLLOUT_GPUS:-${COEVO_BUYER_ROLLOUT_GPU:-2}}
     IFS=, read -r -a ROLLOUT_GPU_IDS <<< "$GPU"
     TP_SIZE=${COEVO_BUYER_ROLLOUT_TP_SIZE:-${#ROLLOUT_GPU_IDS[@]}}
     PORT=${COEVO_BUYER_ROLLOUT_PORT:-8003}
@@ -75,7 +65,8 @@ case "$ROLE" in
     fi
     CUDA_VISIBLE_DEVICES="$GPU" nohup setsid python -m swift.cli.rollout \
       --model "$MODEL_PATH" --model_type "${COEVO_MODEL_TYPE:-qwen3}" \
-      --template "${COEVO_TEMPLATE_TYPE:-qwen3_nothinking}" \
+      --template "${COEVO_BUYER_TEMPLATE_TYPE:-qwen3}" \
+      --enable_thinking "${COEVO_BUYER_ENABLE_THINKING:-true}" \
       --served_model_name "$SERVED_MODEL" --port "$PORT" \
       --external_plugins "$COEVO_ROOT/coevo/training/swift_plugin.py" \
       --multi_turn_scheduler tau2_buyer \

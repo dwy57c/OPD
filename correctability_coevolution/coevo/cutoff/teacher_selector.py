@@ -1,5 +1,6 @@
 from dataclasses import asdict, dataclass
 import json
+from typing import Callable
 
 from openai import OpenAI
 from tau2.data_model.message import Message
@@ -7,6 +8,7 @@ from tau2.data_model.message import Message
 from coevo.config import ModelEndpoint
 from coevo.cutoff.boundaries import CutoffCandidate
 from coevo.environment.tau2 import dump_messages
+from coevo.models.hinted_teacher import TeacherHintResult
 
 
 @dataclass(frozen=True)
@@ -21,17 +23,17 @@ class SelectedCutoff:
 
 
 class TeacherCutoffSelector:
-    """Ask the fixed privileged Teacher to rank prevalidated semantic boundaries."""
+    """Ask the shared policy plus private hint to rank semantic boundaries."""
 
     def __init__(
         self,
         endpoint: ModelEndpoint,
-        privileged_plan: str,
+        hint_provider: Callable[[list[Message]], TeacherHintResult],
         top_k: int,
         seed: int,
     ):
         self.endpoint = endpoint
-        self.privileged_plan = privileged_plan
+        self.hint_provider = hint_provider
         self.top_k = top_k
         self.seed = seed
         self.client = OpenAI(
@@ -43,16 +45,17 @@ class TeacherCutoffSelector:
         history_before_turn: list[Message],
         student_output: str,
         candidates: list[CutoffCandidate],
-    ) -> list[SelectedCutoff]:
+    ) -> tuple[list[SelectedCutoff], TeacherHintResult | None]:
         if not candidates:
-            return []
+            return [], None
+        hint_result = self.hint_provider(history_before_turn)
         count = min(self.top_k, len(candidates))
         ids = [candidate.candidate_id for candidate in candidates]
         candidate_rows = [candidate.to_dict() for candidate in candidates]
         prompt = {
             "history_before_student_turn": dump_messages(history_before_turn),
             "student_complete_turn": student_output,
-            "privileged_resolution_plan": self.privileged_plan,
+            "private_teacher_hint": hint_result.hint,
             "candidate_boundaries": candidate_rows,
             "instruction": (
                 f"Select exactly {count} candidate IDs where takeover is most likely "
@@ -91,7 +94,8 @@ class TeacherCutoffSelector:
                     "role": "system",
                     "content": (
                         "You rank semantic cutoff candidates for on-policy distillation. "
-                        "Use the privileged plan only for ranking. Return the requested JSON."
+                        "You are the same policy model used by Student. Use the private "
+                        "closed-model hint only for ranking. Return the requested JSON."
                     ),
                 },
                 {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
@@ -111,4 +115,4 @@ class TeacherCutoffSelector:
         return [
             SelectedCutoff(by_id[item["candidate_id"]], item["reason"])
             for item in selected
-        ]
+        ], hint_result

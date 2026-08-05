@@ -17,7 +17,7 @@ python "$COEVO_ROOT/scripts/wait_for_servers.py" \
   --timeout 30 \
   --health-path /health/
 
-TRAIN_GPUS=${COEVO_BUYER_TRAIN_GPUS:-5}
+TRAIN_GPUS=${COEVO_BUYER_TRAIN_GPUS:-3}
 IFS=, read -r -a TRAIN_GPU_IDS <<< "$TRAIN_GPUS"
 NPROC=${COEVO_BUYER_TRAIN_NPROC:-${#TRAIN_GPU_IDS[@]}}
 if [[ $NPROC -ne ${#TRAIN_GPU_IDS[@]} ]]; then
@@ -35,7 +35,7 @@ TRAINER_ARGS=(
   --rlhf_type grpo \
   --model "${COEVO_BUYER_BASE_MODEL:-$COEVO_BUYER_PATH}" \
   --model_type "${COEVO_MODEL_TYPE:-qwen3}" \
-  --template "${COEVO_TEMPLATE_TYPE:-qwen3_nothinking}" \
+  --template "${COEVO_BUYER_TEMPLATE_TYPE:-qwen3}" \
   --external_plugins "$COEVO_ROOT/coevo/training/swift_plugin.py" \
   --dataset "$DATA" \
   --remove_unused_columns false \
@@ -49,7 +49,7 @@ TRAINER_ARGS=(
   --num_generations "${COEVO_BUYER_NUM_GENERATIONS:-4}" \
   --max_completion_length "${COEVO_BUYER_MAX_COMPLETION_LENGTH:-512}" \
   --temperature 0.8 \
-  --enable_thinking false \
+  --enable_thinking "${COEVO_BUYER_ENABLE_THINKING:-true}" \
   --beta "${COEVO_BUYER_BETA:-0.01}" \
   --scale_rewards none \
   --torch_dtype bfloat16 \

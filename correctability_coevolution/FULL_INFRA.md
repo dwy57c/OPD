@@ -1,6 +1,6 @@
-# Teacher-Selected Multi-Cutoff Co-Evolution Infra
+# Shared-Policy, Closed-Hint Multi-Cutoff Co-Evolution Infra
 
-更新日期：2026-08-03
+更新日期：2026-08-05
 
 ## 1. 主体入口
 
@@ -22,17 +22,18 @@ scripts/run_coevolution.py
 ## 2. 每个 round 的数据流
 
 ```text
-冻结 Buyer_k + Student_k
+冻结 Buyer_k + Policy_k
   -> 收集完整多轮 trajectory
   -> 对每个完整 Student 文本 turn 提取合法句子边界
-  -> 固定 Teacher 从编号候选中选择 Top-K
+  -> 闭源模型根据当前上下文生成私有 Teacher hint
+  -> 同一个 Policy_k 在 hint 条件下选择 Top-K
   -> vLLM continue_final_message 从同一 assistant prefix 续写
   -> Teacher / Student 分别 rollout 到 terminal
   -> verifier 得到 qT、qS 和 C(h)
   -> cutoff mean 得到 turn score C_t
   -> C_t 门控完整 Student turn 的 token-level OPD
-  -> 得到 Student_{k+1} 并刷新 Student 服务
-  -> 在新 Student 下在线采 Buyer trajectory
+  -> 得到 Policy_{k+1} 并刷新唯一 Policy 服务
+  -> 在新 Policy 的 Student view 下在线采 Buyer trajectory
   -> turn mean 形成 trajectory reward
   -> 仅 Buyer token 参与 GRPO
   -> 得到 Buyer_{k+1} 并刷新 Buyer rollout 服务
@@ -46,7 +47,10 @@ Cutoff 位于已经完成的 Student turn 内部，而不是 turn 起点：
 h_t,c = (H_t, Buyer_t, Student_t,<c)
 ```
 
-`coevo/cutoff/boundaries.py` 只产生可续写的完整句子边界。`TeacherCutoffSelector` 看到当前完整 Student turn、此前历史和 oracle resolution plan，只能返回候选 ID，不能输出任意字符位置。Teacher 的选择理由不进入 reward。
+`coevo/cutoff/boundaries.py` 只产生可续写的完整句子边界。闭源 hinter
+看到当前上下文、policy、工具 schema 和 oracle actions，输出结构化私有 hint；
+`TeacherCutoffSelector` 让共享 Policy 在该 hint 条件下查看完整 Student turn，并且只能
+返回候选 ID，不能输出任意字符位置。hint 和选择理由都不进入公开 trajectory。
 
 `PrefixBranchRunner` 使用 vLLM 原生：
 
@@ -65,7 +69,9 @@ add_generation_prompt = false
 loss = mean_i(C_i * OPD_loss_i)
 ```
 
-batch 内不对 `C_i` 做归一化。Teacher top-20 logits 由端口 8000 的固定 Teacher server 提供。正式脚本使用 `--tuner_type full`。
+batch 内不对 `C_i` 做归一化。Teacher top-20 logits 由端口 8000 的冻结 Policy
+snapshot 提供；Teacher prompt 等于原 query 加收集时保存的私有 hint。Student 与
+Teacher 的模型和权重完全相同，只有输入信息不同。正式脚本使用 `--tuner_type full`。
 
 ## 5. Buyer 全参 GRPO
 
@@ -93,7 +99,7 @@ user。最终结果使用 `scripts/evaluate_student.sh`，让 Student checkpoint
 docker exec -it swift-grpo-dev bash
 ```
 
-启动 Teacher、Student、冻结 Buyer reference 和 Buyer rollout 服务：
+启动唯一 Policy、冻结 Buyer reference 和 Buyer rollout 服务：
 
 ```bash
 ./scripts/start_servers.sh
@@ -128,27 +134,42 @@ OPENAI_API_KEY=... COEVO_EVAL_SAVE_TO=student_gpt41_airline \
 ./scripts/evaluate_student.sh 2 6
 ```
 
+Teacher 使用 Gemini 3.1 Pro 根据最新 history、query、工具结果、policy 和 oracle
+actions 在每个 turn 生成私有 hint。Student 和 Teacher 都由同一个 Policy model 负责
+工具调用与用户可见回复；Teacher 不直接看到 oracle actions，hint 也不进入公开轨迹。
+使用同任务、同 seed 比较无 hint 与闭源 hint：
+
+```bash
+COEVO_TEACHER_HINT_URL=... \
+COEVO_TEACHER_HINT_API_KEY=... \
+python scripts/benchmark_teacher_hint.py \
+  --output-dir artifacts/teacher_hint_benchmark \
+  --task-split test --task-ids 2 6
+```
+
 ## 7. GPU profile
 
 默认服务布局：
 
 | Role | GPU | Port |
 |---|---:|---:|
-| Teacher Qwen3-32B TP=2 | 0,1 | 8000 |
-| Student Qwen3-4B | 2 | 8001 |
-| 固定 Buyer reference | 3 | 8002 |
-| Buyer `swift rollout` | 4 | 8003 |
-| 当前 phase 的全参 Trainer | 5 | - |
+| Student/Teacher 共享 Policy | 0 | 8000 |
+| 固定 Buyer reference | 1 | 8002 |
+| Buyer `swift rollout` | 2 | 8003 |
+| 当前 phase 的全参 Trainer | 3 | - |
 
-GPU 可以通过 `COEVO_TEACHER_GPUS`、`COEVO_STUDENT_GPU`、`COEVO_BUYER_GPU`、`COEVO_BUYER_ROLLOUT_GPU`、`COEVO_STUDENT_TRAIN_GPUS` 和 `COEVO_BUYER_TRAIN_GPUS` 修改。
+GPU 可以通过 `COEVO_POLICY_GPUS`、`COEVO_BUYER_GPU`、
+`COEVO_BUYER_ROLLOUT_GPU`、`COEVO_POLICY_TRAIN_GPUS` 和
+`COEVO_BUYER_TRAIN_GPUS` 修改。
 
-当前 2-way TP Teacher 显式使用 `--disable-custom-all-reduce`，回退到 NCCL。原因是
+多卡 TP Policy 显式使用 `--disable-custom-all-reduce`，回退到 NCCL。原因是
 这台 A100 节点上的 vLLM 0.19.1 custom all-reduce 在 KV cache profiling 阶段返回
 CUDA `invalid argument`；NCCL 路径已通过真实启动验证。
 
 ## 8. 当前验证
 
-2026-08-03 已在 6 张 A100 上完成以下真实链路，而不只是 CLI 或 mock 检查：
+以下是 2026-08-03 旧的“独立 32B Teacher + 4B Student”架构验收记录，仅作为历史
+证据；它不代表本次 shared-policy refactor 已进行 GPU 验收：
 
 ```text
 ruff: all checks passed
@@ -170,7 +191,7 @@ MultiToolMessage、模型生成、prefix branch 和 verifier 的端到端连通�
 `retail/train` task 0 和单轮 scheduler。4 个 generation 中 1 个被 512-token 上限
 截断，其余样本真实执行 retail 工具、Student turn、Teacher/Student terminal branch、
 v1 NL-assertion judge、reward plugin 和 Buyer loss mask；最终 `reward_std=0.1944`，产生
-非零梯度并保存 checkpoint。NL assertion 默认由固定 Teacher 评判，可通过
+非零梯度并保存 checkpoint。NL assertion 默认由独立配置的固定 judge 评判，可通过
 `COEVO_NL_JUDGE_*` 覆盖；并发评分用进程内锁隔离 v1 的全局 judge 配置。
 
 所有服务都在独立 Unix process group 中运行，停止 rollout 的实测同时清除了其

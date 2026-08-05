@@ -2,6 +2,7 @@ from tau2.data_model.message import AssistantMessage
 
 from coevo.environment import Tau2Environment
 from coevo.environment.tau2 import dump_messages
+from coevo.models.hinted_teacher import format_teacher_query_with_hint
 from coevo.rollout.cutoff_scorer import TurnCutoffScorer
 from coevo.rollout.views import buyer_view, student_view
 
@@ -57,7 +58,6 @@ class CorrectabilityCollector:
         env = self.environment
         raw_environment = env.fresh_environment()
         student = env.policies.student(raw_environment)
-        teacher = env.policies.teacher(raw_environment, env.task)
         rows = []
         for turn in record["student_turns"]:
             from coevo.environment.tau2 import load_messages
@@ -73,14 +73,16 @@ class CorrectabilityCollector:
                 for message in reversed(messages[:-1])
                 if message["role"] == "user"
             )
-            privileged = teacher.make_agent_instructions_from_actions()
+            hint_record = turn.get("teacher_hint")
+            if not hint_record or not hint_record.get("hint"):
+                raise ValueError("Student OPSD row is missing its private Teacher hint")
             rows.append(
                 {
                     "messages": messages,
-                    "teacher_prompt": (
-                        f"{last_user}\n\n<privileged_resolution_steps>\n"
-                        f"{privileged}\n</privileged_resolution_steps>"
+                    "teacher_prompt": format_teacher_query_with_hint(
+                        last_user, hint_record["hint"]
                     ),
+                    "teacher_hint": hint_record,
                     "correctability": turn["correctability"],
                     "cutoff_count": len(turn["cutoffs"]),
                     "domain": env.config.domain,

@@ -21,14 +21,12 @@ services:
       TAU2_DATA_DIR: /workspace/OPD/third_party/tau2-bench/data
       PYTHONPATH: /workspace/OPD/correctability_coevolution:/workspace/OPD/third_party/tau2-bench/src
       COEVO_MODEL_ROOT: /models
-      COEVO_TEACHER_PATH: /models/teacher
-      COEVO_STUDENT_PATH: /models/student
-      COEVO_BUYER_PATH: /models/student
+      COEVO_POLICY_PATH: /models/policy
+      COEVO_BUYER_PATH: /models/policy
       HTTPS_PROXY: ${HTTPS_PROXY:-}
       HTTP_PROXY: ${HTTP_PROXY:-}
       ALL_PROXY: ${ALL_PROXY:-}
       NO_PROXY: ${NO_PROXY:-127.0.0.1,localhost}
     volumes:
       - .:/workspace/OPD
-      - ${COEVO_TEACHER_MODEL_DIR:?Set COEVO_TEACHER_MODEL_DIR in .env}:/models/teacher:ro
-      - ${COEVO_STUDENT_MODEL_DIR:?Set COEVO_STUDENT_MODEL_DIR in .env}:/models/student:ro
+      - ${COEVO_POLICY_MODEL_DIR:?Set COEVO_POLICY_MODEL_DIR in .env}:/models/policy:ro
