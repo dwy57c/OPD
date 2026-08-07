@@ -1,200 +1,127 @@
-# Shared-Policy, Closed-Hint Multi-Cutoff Co-Evolution Infra
+# Natural-Decision Environment–Student Co-Evolution
 
-更新日期：2026-08-05
+本文说明当前唯一受支持的共进化路径。系统不使用句内 token、字符或语义 cutoff；
+所有反事实、数据选择、Student target 和 Buyer reward 都定义在完整的自然 Agent
+action 边界上。
 
-## 1. 主体入口
+## 1. 决策单元
 
-完整训练入口：
-
-```text
-scripts/run_coevolution.py
-    -> coevo/orchestration/collection.py
-    -> coevo/rollout/collector.py
-    -> coevo/cutoff/*
-    -> coevo/rollout/prefix_branch.py
-    -> coevo/rewards/*
-    -> scripts/train_student_full.sh
-    -> scripts/train_buyer_full.sh
-```
-
-环境、rollout、cutoff、reward 和训练接入保持独立，不修改 `ms-swift`、`tau2-bench` 或 `slime`。
-
-## 2. 每个 round 的数据流
+一次决策样本为：
 
 ```text
-冻结 Buyer_k + Policy_k
-  -> 收集完整多轮 trajectory
-  -> 对每个完整 Student 文本 turn 提取合法句子边界
-  -> 闭源模型根据当前上下文生成私有 Teacher hint
-  -> 同一个 Policy_k 在 hint 条件下选择 Top-K
-  -> vLLM continue_final_message 从同一 assistant prefix 续写
-  -> Teacher / Student 分别 rollout 到 terminal
-  -> verifier 得到 qT、qS 和 C(h)
-  -> cutoff mean 得到 turn score C_t
-  -> C_t 门控完整 Student turn 的 token-level OPD
-  -> 得到 Policy_{k+1} 并刷新唯一 Policy 服务
-  -> 在新 Policy 的 Student view 下在线采 Buyer trajectory
-  -> turn mean 形成 trajectory reward
-  -> 仅 Buyer token 参与 GRPO
-  -> 得到 Buyer_{k+1} 并刷新 Buyer rollout 服务
+d_t = (s_t, a_t^S)
 ```
 
-## 3. Cutoff
+其中 `s_t` 是 Student 生成 action 前的完整 τ² 状态，`a_t^S` 是一个完整
+`AssistantMessage`，只能是以下之一：
 
-Cutoff 位于已经完成的 Student turn 内部，而不是 turn 起点：
+- 完整文本回复；
+- 一次工具调用；
+- 一组协议允许的并行工具调用。
+
+`coevo/intervention/decision_state.py` 负责提取该状态，并分别记录 state hash 与
+包含 Student action 的 sample hash。
+
+## 2. 单动作 Teacher takeover
+
+`coevo/intervention/teacher_action.py` 在相同 `s_t` 上让 privileged Teacher 生成一个
+完整 action `a_t^T`。Teacher 只控制这一个 action，之后立即退出。
+
+`coevo/intervention/action_branch.py` 构造两条分支：
 
 ```text
-h_t,c = (H_t, Buyer_t, Student_t,<c)
+s_t -> a_t^S -> frozen Student continuation
+s_t -> a_t^T -> frozen Student continuation
 ```
 
-`coevo/cutoff/boundaries.py` 只产生可续写的完整句子边界。闭源 hinter
-看到当前上下文、policy、工具 schema 和 oracle actions，输出结构化私有 hint；
-`TeacherCutoffSelector` 让共享 Policy 在该 hint 条件下查看完整 Student turn，并且只能
-返回候选 ID，不能输出任意字符位置。hint 和选择理由都不进入公开 trajectory。
+两条分支共享 task、初始环境状态、Student checkpoint、冻结 continuation user、
+verifier、最大步数和 seed 集合。工具 action 的环境 observation 属于该 action 的状态
+转移，observation 后仍由 Student 接管。
 
-`PrefixBranchRunner` 使用 vLLM 原生：
+## 3. Category-balanced soft score
+
+`coevo/rewards/tau2_soft_score.py` 从 τ² `RewardInfo` 的原子检查构造四类完成度：
+
+- Action；
+- Communication；
+- Environment（DB exact match 与 environment assertions）；
+- NL Assertions。
+
+外层只对任务 `reward_basis` 真正启用的类别取平均。缺失的已启用检查 fail-closed，
+大量 action checks 不会压过其他类别。
+
+局部 intervention advantage 为相同 seed 的成对差值均值：
 
 ```text
-continue_final_message = true
-add_generation_prompt = false
+delta_t = mean_m(soft_score_teacher_m - soft_score_student_m)
 ```
 
-因此 Teacher 与 Student 续写的是同一个未完成 assistant message，而不是开启一个新的对话 turn。
+## 4. Structured Buyer 与硬合法性门控
 
-## 4. Student 全参 OPD
+Buyer 只生成 `coevo/models/buyer_plan.py` 定义的 private JSON plan。冻结的
+`coevo/models/frozen_renderer.py` 将 plan 渲染为 public user text 或 user tool call。
+private diagnosis、target skill 和 predicted gain 不进入 Student、Teacher、continuation
+user 或 verifier history。
 
-`CorrectabilityGKDTrainer` 直接使用收集阶段保存的完整 Student response，不在训练时重新生成另一条 response。每个样本先独立计算 OPSD loss：
+以下情况将 rollout validity 置零：
+
+- schema、枚举或 payload 不合法；
+- 请求不存在的 user tool；
+- stop reason 不合法；
+- public text 未通过 prompt-injection 检查；
+- reveal-hidden-constraint 内容不在 hidden scenario；
+- Buyer 自己发起的 user tool transition 失败。
+
+Student 的错误工具、漏确认或错误回答不是 Buyer invalidity，因为它们正是环境需要发现
+的能力边界。
+
+## 5. Buyer reward
+
+快速阶段使用 trajectory 内自然决策的 mean intervention advantage。存在固定预算的
+shadow OPD 标签时，`buyer_scheduler.py` 使用真实或 critic 预测的 post-OPD gain，并以
+validity 作硬门控。
+
+`coevo/rewards/buyer.py` 提供 positive-delta turn credit 与 absolute group skip；当一个
+GRPO group 的最佳 reward LCB 仍不大于零时，整组 reward 归零，不从有害数据中制造相对
+赢家。
+
+## 6. Student 数据
+
+采集器只保留 `delta_t > 0` 的自然决策。主训练 target 是 Teacher 的完整 corrective
+action：
 
 ```text
-loss = mean_i(C_i * OPD_loss_i)
+(s_t, a_t^T)
 ```
 
-batch 内不对 `C_i` 做归一化。Teacher top-20 logits 由端口 8000 的冻结 Policy
-snapshot 提供；Teacher prompt 等于原 query 加收集时保存的私有 hint。Student 与
-Teacher 的模型和权重完全相同，只有输入信息不同。正式脚本使用 `--tuner_type full`。
+每行同时保留原始 Student branch，供 original-branch control 使用。数据中记录
+intervention advantage、Student/Teacher continuation value、state/sample hash 与私有
+Teacher hint 审计信息。
 
-## 5. Buyer 全参 GRPO
+## 7. Shadow OPD 与 utility critic
 
-`Tau2BuyerScheduler` 在更新后的冻结 Student 下进行在线多轮 rollout。scheduler 运行在独立的 `swift rollout` server 内；每个 Buyer 输出（包括最后一个）都会先进入对应 task 的 τ² 环境，再决定终止和计算 reward。每个已完成 Student turn 都调用同一套 Teacher-selected cutoff scorer，累计：
+- `coevo/training/shadow_opd.py`：固定 optimizer steps、learning rate、token budget、
+  LoRA rank 与 batch size；临时 adapter 无论成功或异常都由 context manager 删除。
+- `coevo/rewards/utility_critic.py`：用真实 shadow gain 周期性校准快速 utility 预测。
+- `coevo/training/buyer_plan_aux.py`：记录 predicted takeover gain、failure type 和
+  plan–action consistency 的独立辅助监督。
+
+## 8. 运行配置
+
+关键配置：
 
 ```text
-R_B = trajectory_validity * mean_t(C_t)
+COEVO_MAX_INTERVENTION_DECISIONS=0
+COEVO_CONTINUATIONS=1
+COEVO_BUYER_PLAN_MODE=structured
 ```
 
-Swift loss mask 只覆盖 Buyer response token；Student、工具和 Teacher branch token 都不进入 Buyer loss。scheduler 从每条数据的 `domain` / `task_split` / `task_id` 选择 DB、oracle plan 和 verifier，不再把多 task batch 固定到 task 1。端口 8002 是 phase 内固定的 τ² Buyer reference；GRPO rollout 使用独立的 `swift rollout` server mode，完整权重由 Trainer 同步到端口 8003。
+`COEVO_MAX_INTERVENTION_DECISIONS=0` 表示评估轨迹中的全部自然 Student actions。
+Buyer GRPO 使用 Swift reward `tau2_buyer_utility`。
 
-训练后的 Buyer 只用于下一轮生成更有区分度的训练环境，不作为最终 benchmark
-user。最终结果使用 `scripts/evaluate_student.sh`，让 Student checkpoint 面对固定的
-独立 user simulator（`v1.0.0` 官方示例为 `gpt-4.1`）并交给原生 τ² verifier。
-τ² environment 不是模型；它负责数据库、工具执行、业务 policy 和状态验证。
-
-训练/收集默认使用 v1 官方 `train` split，最终评测默认使用官方 `test` split；split
-名称和 task ID 一起写入每条训练数据，防止 Buyer scheduler 跨 split 复用错误环境。
-
-## 6. 运行
-
-首次运行先按 [`SETUP.md`](SETUP.md) 拉取固定上游、构建容器并执行 preflight。进入容器：
+运行测试：
 
 ```bash
-docker exec -it swift-grpo-dev bash
+ruff check correctability_coevolution/coevo correctability_coevolution/tests
+pytest -q correctability_coevolution/tests
 ```
-
-启动唯一 Policy、冻结 Buyer reference 和 Buyer rollout 服务：
-
-```bash
-./scripts/start_servers.sh
-```
-
-只收集数据：
-
-```bash
-COEVO_CUTOFFS_PER_TURN=2 COEVO_MAX_CUTOFF_TURNS=3 \
-python scripts/collect_round.py \
-  --output-dir artifacts/example_round \
-  --task-ids 1 3
-```
-
-运行一个两步 Student + 两步 Buyer 的完整 round：
-
-```bash
-python scripts/run_coevolution.py \
-  --output-dir artifacts/full_run \
-  --rounds 1 \
-  --student-steps 2 \
-  --buyer-steps 2 \
-  --task-ids 1
-```
-
-如果服务尚未启动，可增加 `--start-services`。
-
-独立评测 Student（位置参数为可选 task ID）：
-
-```bash
-OPENAI_API_KEY=... COEVO_EVAL_SAVE_TO=student_gpt41_airline \
-./scripts/evaluate_student.sh 2 6
-```
-
-Teacher 使用 Gemini 3.1 Pro 根据最新 history、query、工具结果、policy 和 oracle
-actions 在每个 turn 生成私有 hint。Student 和 Teacher 都由同一个 Policy model 负责
-工具调用与用户可见回复；Teacher 不直接看到 oracle actions，hint 也不进入公开轨迹。
-使用同任务、同 seed 比较无 hint 与闭源 hint：
-
-```bash
-COEVO_TEACHER_HINT_URL=... \
-COEVO_TEACHER_HINT_API_KEY=... \
-python scripts/benchmark_teacher_hint.py \
-  --output-dir artifacts/teacher_hint_benchmark \
-  --task-split test --task-ids 2 6
-```
-
-## 7. GPU profile
-
-默认服务布局：
-
-| Role | GPU | Port |
-|---|---:|---:|
-| Student/Teacher 共享 Policy | 0 | 8000 |
-| 固定 Buyer reference | 1 | 8002 |
-| Buyer `swift rollout` | 2 | 8003 |
-| 当前 phase 的全参 Trainer | 3 | - |
-
-GPU 可以通过 `COEVO_POLICY_GPUS`、`COEVO_BUYER_GPU`、
-`COEVO_BUYER_ROLLOUT_GPU`、`COEVO_POLICY_TRAIN_GPUS` 和
-`COEVO_BUYER_TRAIN_GPUS` 修改。
-
-多卡 TP Policy 显式使用 `--disable-custom-all-reduce`，回退到 NCCL。原因是
-这台 A100 节点上的 vLLM 0.19.1 custom all-reduce 在 KV cache profiling 阶段返回
-CUDA `invalid argument`；NCCL 路径已通过真实启动验证。
-
-## 8. 当前验证
-
-以下是 2026-08-03 旧的“独立 32B Teacher + 4B Student”架构验收记录，仅作为历史
-证据；它不代表本次 shared-policy refactor 已进行 GPU 验收：
-
-```text
-ruff: all checks passed
-pytest: 14 passed
-Swift plugin import: passed
-Swift 4.1.3 full tuner / GKD / GRPO / server-mode CLI preflight: passed
-4 services: Teacher / Student / Buyer reference / Buyer rollout ready
-tau2 v1 train split: airline task 1 collection passed
-Student LoRA gated-GKD: 1 step, loss 0.0193512, grad_norm 0.0718474
-Buyer LoRA masked-GRPO: 1 step, reward 0.125, loss 0.01389, grad_norm 0.1174
-```
-
-本轮产物位于 `artifacts/v1_infra_smoke/`。采集限制为 1 个 trajectory、1 个
-Student turn、1 个 Teacher-selected cutoff 和每个 policy 1 次 continuation；得到
-`qT=1/3`、`qS=1/3`、`C=2/9`。分数包含 Beta(1,1) prior，只用于证明 v1 task、
-MultiToolMessage、模型生成、prefix branch 和 verifier 的端到端连通性，不是性能结论。
-
-额外的 Buyer 验收位于 `artifacts/v1_buyer_reward_smoke/`，使用官方
-`retail/train` task 0 和单轮 scheduler。4 个 generation 中 1 个被 512-token 上限
-截断，其余样本真实执行 retail 工具、Student turn、Teacher/Student terminal branch、
-v1 NL-assertion judge、reward plugin 和 Buyer loss mask；最终 `reward_std=0.1944`，产生
-非零梯度并保存 checkpoint。NL assertion 默认由独立配置的固定 judge 评判，可通过
-`COEVO_NL_JUDGE_*` 覆盖；并发评分用进程内锁隔离 v1 的全局 judge 配置。
-
-所有服务都在独立 Unix process group 中运行，停止 rollout 的实测同时清除了其
-`VLLM::EngineCore` 并释放 GPU 4，没有影响其他三个服务。以上均是 LoRA 的最小链路
-验收；正式的全参多轮训练和独立 `test` split benchmark 尚未运行，不能据此宣称
-实验收敛。

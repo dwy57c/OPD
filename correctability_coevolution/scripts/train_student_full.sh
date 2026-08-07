@@ -46,8 +46,8 @@ TRAINER_ARGS=(
   --per_device_train_batch_size 1 \
   --gradient_accumulation_steps 1 \
   --learning_rate 1e-6 \
-  --max_length 8192 \
-  --max_completion_length 256 \
+  --max_length "${COEVO_POLICY_TRAIN_MAX_LENGTH:-8192}" \
+  --max_completion_length "${COEVO_POLICY_TRAIN_MAX_COMPLETION_LENGTH:-256}" \
   --gradient_checkpointing true \
   --logging_steps 1 \
   --save_steps "$STEPS" \

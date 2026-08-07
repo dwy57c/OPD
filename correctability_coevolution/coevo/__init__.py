@@ -1,2 +1,1 @@
-"""Correctability-driven Teacher/Student/Buyer co-evolution."""
-
+"""Natural-decision Teacher/Student/Buyer co-evolution."""

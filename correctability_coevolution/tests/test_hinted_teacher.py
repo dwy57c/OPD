@@ -65,6 +65,9 @@ def test_teacher_is_shared_policy_with_private_hint_only(monkeypatch):
     response, state = agent.generate_next_message(
         UserMessage(role="user", content="Please cancel reservation ABC123."), state
     )
+    agent.generate_next_message(
+        UserMessage(role="user", content="Yes, I confirm."), state
+    )
 
     assert response.content == "Please confirm."
     assert hinter.payloads[0]["current_history"][-1]["content"] == (
@@ -76,3 +79,4 @@ def test_teacher_is_shared_policy_with_private_hint_only(monkeypatch):
     assert "<oracle_reference>" not in system
     assert "<resolution_steps>" not in system
     assert agent.hint_records[0]["latency_ms"] == 12
+    assert len(hinter.payloads) == 1

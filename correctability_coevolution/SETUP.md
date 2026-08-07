@@ -97,6 +97,23 @@ python scripts/preflight.py services
 
 ## 5. 测试与最小真实 smoke
 
+系统只使用完整自然决策边界：
+
+```text
+COEVO_BUYER_PLAN_MODE=structured
+```
+
+它在完整 Student action（文本或一组协议允许的并行 tool calls）后建立 Student / 单次
+Teacher takeover 分支，两个分支立即交回同一 Student，并用相同 seed 的冻结 continuation
+user 计算 category-balanced soft completion 差值。Buyer 只生成 private JSON plan；只有
+冻结 Renderer 的 public action 会进入 Student、Teacher 和 verifier history。运行、采集、
+Student 数据构造和 Buyer reward 中都不存在句内 token/字符 cutoff 分支。
+
+`COEVO_CONTINUATIONS` 控制 paired continuation 数量；
+`COEVO_MAX_INTERVENTION_DECISIONS=0` 表示评估轨迹中全部自然 Student actions。正式跑
+Buyer-GRPO 前应先完成 structured-plan SFT 和 reward calibration gate；不要直接把旧
+free-form Buyer checkpoint 当成 structured Planner。
+
 ```bash
 ruff check .
 pytest -q
@@ -136,7 +153,7 @@ hint 是两条独立路径，并用 `COEVO_NL_JUDGE_MODEL`、`COEVO_NL_JUDGE_URL
 
 ## 6. 独立 benchmark user 评测
 
-训练时的 Buyer 是可学习 Qwen3-4B，correctability rollout 使用独立冻结的 Buyer
+训练时的 Buyer 是可学习 Qwen3-4B，intervention continuation 使用独立冻结的 Buyer
 reference。最终评测不要使用训练后的 Buyer；在 Student 服务已经启动后，用固定
 user simulator 运行原生 τ² evaluator：
 

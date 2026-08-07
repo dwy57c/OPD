@@ -9,8 +9,10 @@ from tau2.data_model.message import AssistantMessage, ToolMessage
 from coevo.config import InfraConfig
 from coevo.environment import Tau2Environment
 from coevo.environment.tau2 import dump_messages, load_messages
-from coevo.rewards import trajectory_buyer_reward, transition_validity
-from coevo.rollout import build_cutoff_scorer
+from coevo.intervention import DecisionState
+from coevo.models import BuyerPlan, BuyerRenderContext, FrozenRenderer
+from coevo.rewards import transition_validity
+from coevo.rollout import build_action_branch_runner
 
 
 def visible_buyer_content(content: str | None) -> str:
@@ -60,6 +62,7 @@ class Tau2BuyerScheduler(MultiTurnScheduler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.base_config = InfraConfig.from_env()
+        self.renderer = FrozenRenderer()
         self._contexts = {}
         self._contexts_lock = Lock()
 
@@ -79,7 +82,7 @@ class Tau2BuyerScheduler(MultiTurnScheduler):
                         task_id=task_id,
                     )
                 )
-                context = (environment, build_cutoff_scorer(environment))
+                context = (environment, build_action_branch_runner(environment))
                 self._contexts[key] = context
         return context
 
@@ -103,22 +106,71 @@ class Tau2BuyerScheduler(MultiTurnScheduler):
 
     @staticmethod
     def _rollout_infos(data: dict) -> dict:
-        turn_scores = list(data.get("turn_correctability", []))
+        turn_scores = list(data.get("turn_intervention_advantages", []))
         validity = float(data.get("trajectory_validity", 1.0))
+        mean_advantage = sum(turn_scores) / len(turn_scores) if turn_scores else 0.0
+        fast_reward = validity * mean_advantage
+        if "opd_utility_gain" in data:
+            raw_reward = float(data["opd_utility_gain"])
+            reward_source = str(data.get("opd_utility_source", "shadow_opd"))
+            reward = validity * raw_reward
+        else:
+            raw_reward = sum(turn_scores) / len(turn_scores) if turn_scores else 0.0
+            reward_source = "intervention_advantage"
+            reward = fast_reward
         return {
-            "correctability_reward": trajectory_buyer_reward(turn_scores, validity),
-            "trajectory_correctability": (
-                sum(turn_scores) / len(turn_scores) if turn_scores else 0.0
-            ),
-            "turn_correctability": turn_scores,
+            "buyer_reward": reward,
+            "reward_source": reward_source,
+            "raw_reward": raw_reward,
+            "fast_intervention_reward": fast_reward,
+            "mean_intervention_advantage": mean_advantage,
+            "turn_intervention_advantages": turn_scores,
             "validity": validity,
-            "cutoff_count": int(data.get("cutoff_count", 0)),
+            "decision_count": int(data.get("decision_count", 0)),
+            "plan_errors": list(data.get("buyer_plan_errors", [])),
         }
 
     def _mark_truncated(self, infer_request) -> dict:
         data = infer_request.data_dict
         data["trajectory_validity"] = 0.0
         return self._rollout_infos(data)
+
+    def _decode_buyer_action(self, environment, response_choice, data: dict):
+        content = visible_buyer_content(response_choice.message.content)
+        if self.base_config.buyer_plan_mode == "legacy":
+            return environment.buyer_message(content, response_choice.message.tool_calls)
+        if response_choice.message.tool_calls:
+            raise ValueError("Structured Buyer Planner must not emit public tool calls")
+        plan = BuyerPlan.from_text(content)
+        tool_names = (
+            environment.available_user_tool_names()
+            if hasattr(environment, "available_user_tool_names")
+            else ()
+        )
+        scenario_text = (
+            environment.buyer_scenario_text()
+            if hasattr(environment, "buyer_scenario_text")
+            else ""
+        )
+        public_action = self.renderer.render(
+            plan,
+            BuyerRenderContext(
+                available_user_tools=tuple(tool_names),
+                scenario_text=scenario_text,
+                turn_index=len(data.get("buyer_private_plans", [])),
+            ),
+        )
+        data.setdefault("buyer_private_plans", []).append(plan.to_dict())
+        data.setdefault("buyer_public_actions", []).append(public_action.to_dict())
+        data.setdefault("plan_action_consistency", []).append(1.0)
+        return public_action.to_message()
+
+    @staticmethod
+    def _record_plan_error(data: dict, error: Exception) -> None:
+        data["trajectory_validity"] = 0.0
+        data.setdefault("buyer_plan_errors", []).append(
+            {"type": type(error).__name__, "message": str(error)}
+        )
 
     def _apply_buyer_action(
         self, infer_request, response_choice, append_observation: bool
@@ -130,21 +182,20 @@ class Tau2BuyerScheduler(MultiTurnScheduler):
                 "train with --vllm_server_pass_dataset true"
             )
 
-        environment, cutoff_scorer = self._context(data)
+        environment, branch_runner = self._context(data)
         history = load_messages(data["tau_history"])
-        turn_scores = list(data.get("turn_correctability", []))
+        turn_scores = list(data.get("turn_intervention_advantages", []))
         validity_score = float(data.get("trajectory_validity", 1.0))
         try:
-            buyer_message = environment.buyer_message(
-                visible_buyer_content(response_choice.message.content),
-                response_choice.message.tool_calls,
+            buyer_message = self._decode_buyer_action(
+                environment, response_choice, data
             )
-        except (TypeError, ValueError):
-            data["trajectory_validity"] = 0.0
+        except (TypeError, ValueError) as error:
+            self._record_plan_error(data, error)
             return self._rollout_infos(data), True
         history.append(buyer_message)
 
-        cutoff_count = 0
+        decision_count = 0
         if not buyer_message.is_tool_call() and not buyer_message.content:
             validity_score = 0.0
             finished = True
@@ -168,35 +219,41 @@ class Tau2BuyerScheduler(MultiTurnScheduler):
         elif not finished:
             transition_start = len(history)
             history = environment.advance_student(history)
-            transition = history[transition_start:]
-            validity_score *= transition_validity(transition)
-            message_index = next(
-                (
-                    index
-                    for index in range(len(history) - 1, transition_start - 1, -1)
-                    if isinstance(history[index], AssistantMessage)
-                    and history[index].content
-                    and not history[index].tool_calls
-                ),
-                None,
-            )
-            if message_index is None:
+            # Student errors are learning targets, not Buyer invalidity. Only a
+            # Buyer-issued user tool transition is validity-gated above.
+            all_decision_indexes = [
+                index
+                for index in range(transition_start, len(history))
+                if isinstance(history[index], AssistantMessage)
+                and (history[index].content or history[index].tool_calls)
+            ]
+            if not all_decision_indexes:
                 validity_score = 0.0
                 finished = True
             else:
-                scored_turn = cutoff_scorer.score_turn(history, message_index)
-                correctability = scored_turn["correctability"] if scored_turn else 0.0
-                turn_scores.append(correctability)
-                cutoff_count = len(scored_turn["cutoffs"]) if scored_turn else 0
+                decision_indexes = all_decision_indexes
+                max_decisions = self.base_config.max_intervention_decisions
+                if max_decisions:
+                    decision_indexes = decision_indexes[:max_decisions]
+                for message_index in decision_indexes:
+                    result = branch_runner.run(
+                        DecisionState.from_history(history, message_index)
+                    )
+                    result_row = result.to_dict()
+                    advantage = float(result_row["intervention_advantage"])
+                    turn_scores.append(advantage)
+                    data.setdefault("interventions", []).append(result_row)
+                    decision_count += 1
                 if append_observation:
+                    message_index = all_decision_indexes[-1]
                     infer_request.messages.append(
                         {"role": "user", "content": history[message_index].content}
                     )
 
         data["tau_history"] = dump_messages(history)
-        data["turn_correctability"] = turn_scores
+        data["turn_intervention_advantages"] = turn_scores
         data["trajectory_validity"] = validity_score
-        data["cutoff_count"] = int(data.get("cutoff_count", 0)) + cutoff_count
+        data["decision_count"] = int(data.get("decision_count", 0)) + decision_count
         return self._rollout_infos(data), finished
 
     async def run(self, infer_request, request_config, **kwargs):

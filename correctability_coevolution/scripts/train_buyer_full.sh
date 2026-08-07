@@ -39,7 +39,7 @@ TRAINER_ARGS=(
   --external_plugins "$COEVO_ROOT/coevo/training/swift_plugin.py" \
   --dataset "$DATA" \
   --remove_unused_columns false \
-  --reward_funcs tau2_correctability \
+  --reward_funcs tau2_buyer_utility \
   --tuner_type "$TUNER_TYPE" \
   --use_vllm true \
   --vllm_mode server \

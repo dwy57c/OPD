@@ -91,6 +91,23 @@ def test_tau2_v1_official_train_and_test_splits_are_disjoint():
         assert train_ids.isdisjoint(test_ids)
 
 
+def test_hinted_environment_accepts_every_official_train_task():
+    endpoint = ModelEndpoint("unused", "http://127.0.0.1:1")
+    for domain in ("airline", "retail", "telecom"):
+        for task in get_tasks(domain, task_split_name="train"):
+            environment = Tau2Environment(
+                InfraConfig(
+                    policy=endpoint,
+                    buyer_reference=endpoint,
+                    teacher_hint_mode="none",
+                    domain=domain,
+                    task_split="train",
+                    task_id=str(task.id),
+                )
+            )
+            assert environment.task.id == task.id
+
+
 def test_tau2_v1_multi_tool_message_round_trips():
     message = MultiToolMessage(
         role="tool",
@@ -139,7 +156,8 @@ def test_tau2_v1_nl_assertions_use_configured_fixed_judge(monkeypatch):
     )
     previous_model = evaluator_nl_assertions.DEFAULT_LLM_NL_ASSERTIONS
     previous_args = evaluator_nl_assertions.DEFAULT_LLM_NL_ASSERTIONS_ARGS
-    reward = object()
+    expected_checks = len(environment.task.evaluation_criteria.nl_assertions or [])
+    reward = type("Reward", (), {"nl_assertions": [object()] * expected_checks})()
 
     def fake_evaluate_simulation(**kwargs):
         assert kwargs["evaluation_type"] == EvaluationType.ALL_WITH_NL_ASSERTIONS
@@ -154,6 +172,17 @@ def test_tau2_v1_nl_assertions_use_configured_fixed_judge(monkeypatch):
         )
         assert evaluator_nl_assertions.DEFAULT_LLM_NL_ASSERTIONS_ARGS["api_key"] == (
             "runtime-secret"
+        )
+        response_format = evaluator_nl_assertions.DEFAULT_LLM_NL_ASSERTIONS_ARGS[
+            "response_format"
+        ]
+        assert response_format["type"] == "json_schema"
+        assert response_format["json_schema"]["strict"] is True
+        assert (
+            response_format["json_schema"]["schema"]["properties"]["results"][
+                "minItems"
+            ]
+            == expected_checks
         )
         return reward
 
@@ -179,7 +208,7 @@ def test_unknown_tool_in_continuation_is_scored_invalid(monkeypatch):
     monkeypatch.setattr(
         environment,
         "orchestrator",
-        lambda history, policy, seed=None: Orchestrator(),
+        lambda history, policy, seed=None, teacher_hint=None: Orchestrator(),
     )
     monkeypatch.setattr(
         environment,
@@ -193,3 +222,9 @@ def test_unknown_tool_in_continuation_is_scored_invalid(monkeypatch):
 
     assert simulation.reward_info.reward == 0.0
     assert simulation.reward_info.info["invalid_continuation"] is True
+
+
+def test_model_endpoint_does_not_duplicate_v1_path():
+    endpoint = ModelEndpoint("unused", "http://127.0.0.1:9000/v1/")
+
+    assert endpoint.litellm_args["api_base"] == "http://127.0.0.1:9000/v1"

@@ -9,7 +9,6 @@ import sys
 import time
 
 from loguru import logger
-from tau2.agent.llm_agent import LLMGTAgent
 from tau2.data_model.message import AssistantMessage, ToolMessage
 from tau2.run import get_tasks
 
@@ -195,7 +194,6 @@ def main():
         selected = [by_id[task_id] for task_id in args.task_ids]
     else:
         selected = tasks
-    selected = [task for task in selected if LLMGTAgent.check_valid_task(task)]
     if args.num_tasks is not None:
         selected = selected[: args.num_tasks]
 

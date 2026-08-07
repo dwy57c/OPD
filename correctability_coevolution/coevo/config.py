@@ -18,8 +18,11 @@ class ModelEndpoint:
 
     @property
     def litellm_args(self) -> dict:
+        api_base = self.base_url.rstrip("/")
+        if not api_base.endswith("/v1"):
+            api_base += "/v1"
         args = {
-            "api_base": self.base_url.rstrip("/") + "/v1",
+            "api_base": api_base,
             "api_key": self.api_key,
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
@@ -100,11 +103,12 @@ class InfraConfig:
     task_id: str = "1"
     branch_max_steps: int = 24
     branch_max_tokens: int = 256
-    cutoffs_per_turn: int = 2
-    max_cutoff_turns: int = 3
+    # 0 means every natural Student action in the completed dialogue.
+    max_intervention_decisions: int = 0
+    buyer_plan_mode: str = "structured"
     continuations: int = 1
-    correctability_prior: float = 1.0
     nl_judge_max_tokens: int = 1024
+    nl_judge_retries: int = 3
     seed: int = 42
     teacher_hint_mode: str = "closed_model"
     teacher_hinter: HintEndpoint | None = None
@@ -119,6 +123,17 @@ class InfraConfig:
             raise ValueError(
                 "teacher_hinter is required when teacher_hint_mode='closed_model'"
             )
+        if self.max_intervention_decisions < 0:
+            raise ValueError(
+                "max_intervention_decisions must be non-negative (0 means unlimited)"
+            )
+        if self.buyer_plan_mode not in {"structured", "legacy"}:
+            raise ValueError(
+                "buyer_plan_mode must be 'structured' or 'legacy', got "
+                f"{self.buyer_plan_mode!r}"
+            )
+        if self.nl_judge_retries < 1:
+            raise ValueError("nl_judge_retries must be positive")
 
     @property
     def student(self) -> ModelEndpoint:
@@ -156,14 +171,14 @@ class InfraConfig:
             task_id=os.getenv("COEVO_TASK_ID", "1"),
             branch_max_steps=int(os.getenv("COEVO_BRANCH_MAX_STEPS", "24")),
             branch_max_tokens=int(os.getenv("COEVO_BRANCH_MAX_TOKENS", "256")),
-            cutoffs_per_turn=int(os.getenv("COEVO_CUTOFFS_PER_TURN", "2")),
-            max_cutoff_turns=int(os.getenv("COEVO_MAX_CUTOFF_TURNS", "3")),
+            max_intervention_decisions=int(
+                os.getenv("COEVO_MAX_INTERVENTION_DECISIONS", "0")
+            ),
+            buyer_plan_mode=os.getenv("COEVO_BUYER_PLAN_MODE", "structured"),
             continuations=int(os.getenv("COEVO_CONTINUATIONS", "1")),
-            correctability_prior=float(os.getenv("COEVO_CORRECTABILITY_PRIOR", "1.0")),
             nl_judge_max_tokens=int(os.getenv("COEVO_NL_JUDGE_MAX_TOKENS", "1024")),
+            nl_judge_retries=int(os.getenv("COEVO_NL_JUDGE_RETRIES", "3")),
             seed=int(os.getenv("COEVO_SEED", "42")),
             teacher_hint_mode=hint_mode,
-            teacher_hinter=HintEndpoint.from_env(
-                required=hint_mode == "closed_model"
-            ),
+            teacher_hinter=HintEndpoint.from_env(required=hint_mode == "closed_model"),
         )

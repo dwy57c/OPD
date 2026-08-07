@@ -4,7 +4,7 @@ from pathlib import Path
 
 from coevo.config import InfraConfig
 from coevo.environment import Tau2Environment
-from coevo.rollout import CorrectabilityCollector, build_cutoff_scorer
+from coevo.rollout import NaturalDecisionCollector, build_action_branch_runner
 
 
 def _write_json(path: Path, value) -> None:
@@ -36,16 +36,17 @@ def _build_summary(
         "task_ids": task_ids,
         "completed_task_ids": [task_id for task_id in task_ids if task_id in completed],
         "trajectories": len(records),
-        "student_turns": sum(len(record["student_turns"]) for record in records),
-        "cutoffs": sum(
-            len(turn["cutoffs"])
-            for record in records
-            for turn in record["student_turns"]
+        "student_decisions": sum(
+            len(record["student_decisions"]) for record in records
         ),
-        "turn_correctability": [
-            turn["correctability"]
+        "decision_interventions": sum(
+            len(record["student_decisions"]) for record in records
+        ),
+        "intervention_advantages": [
+            turn["intervention_advantage"]
             for record in records
-            for turn in record["student_turns"]
+            for turn in record["student_decisions"]
+            if "intervention_advantage" in turn
         ],
         "errors": errors,
     }
@@ -89,10 +90,10 @@ def collect_dataset(
     for task_index, task_id in enumerate(task_ids, start=1):
         print(f"[collect] task {task_index}/{len(task_ids)}: {task_id}", flush=True)
         environment = Tau2Environment(replace(config, task_id=task_id))
-        collector = CorrectabilityCollector(
+        collector = NaturalDecisionCollector(
             environment,
-            build_cutoff_scorer(environment),
-            max_turns=environment.config.max_cutoff_turns,
+            build_action_branch_runner(environment),
+            max_decisions=environment.config.max_intervention_decisions,
         )
         for trajectory_index in range(trajectories_per_task):
             seed = config.seed + trajectory_index
@@ -154,7 +155,7 @@ def collect_dataset(
             )
             print(
                 f"[collect] saved task={task_id} seed={seed} "
-                f"trajectories={len(records)} student_rows={len(student_rows)}",
+                f"trajectories={len(records)} student_decisions={len(student_rows)}",
                 flush=True,
             )
 

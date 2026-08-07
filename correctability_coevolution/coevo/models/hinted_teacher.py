@@ -24,30 +24,6 @@ from tau2.data_model.tasks import Task
 from coevo.config import HintEndpoint
 
 
-HINT_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "current_state": {"type": "string"},
-        "latest_user_intent": {"type": "string"},
-        "completed_or_obsolete_steps": {
-            "type": "array",
-            "items": {"type": "string"},
-        },
-        "next_step": {"type": "string"},
-        "remaining_steps": {"type": "array", "items": {"type": "string"}},
-        "policy_checks": {"type": "array", "items": {"type": "string"}},
-    },
-    "required": [
-        "current_state",
-        "latest_user_intent",
-        "completed_or_obsolete_steps",
-        "next_step",
-        "remaining_steps",
-        "policy_checks",
-    ],
-    "additionalProperties": False,
-}
-
 HINTER_INSTRUCTION = """
 You are a private hint generator for a customer-service policy model. The same
 policy model is used for both Student and Teacher. The Teacher differs only in
@@ -59,18 +35,22 @@ model's next turn. Do not produce the public response and do not reveal
 chain-of-thought.
 
 Rules:
-1. Treat oracle tool names and arguments as authoritative; never invent or alter
-   their IDs, dates, amounts, passenger data, or payment methods.
+1. When oracle resolution steps are present, treat their tool names and arguments
+   as authoritative; never invent or alter their IDs, dates, amounts, passenger
+   data, or payment methods. Some informational tasks have no oracle tool steps.
 2. Reconcile the oracle steps with actions and tool results already present in
    history. Mark completed or no-longer-applicable steps explicitly.
 3. The next step must obey policy prerequisites such as identification,
    clarification, disclosure of action details, and explicit confirmation.
-4. Choose exactly one immediate next action: ask/say one thing, or issue one tool
-   call. Put later work in remaining_steps.
+4. State the immediate next action, then give the remaining ordered plan so the
+   policy model can reuse this hint throughout the current dialogue branch.
 5. If the latest input is a tool result, use it to decide the next action. If it
    is a user query, answer or clarify it before advancing the workflow.
-6. Do not recommend side-effecting actions outside the oracle resolution steps.
-7. Return only JSON matching the supplied schema.
+6. When oracle steps are present, do not recommend side-effecting actions outside
+   them. When they are absent, follow the domain policy and visible request without
+   inventing an unnecessary side effect.
+7. Return a concise plain-text plan. Use headings STATE, USER INTENT, NEXT ACTION,
+   REMAINING PLAN, and POLICY CHECKS. Do not return JSON or chain-of-thought.
 """.strip()
 
 
@@ -120,33 +100,6 @@ class ClosedModelTeacherHinter:
             max_retries=0,
         )
 
-    @staticmethod
-    def _parse_hint(content: str) -> dict[str, Any]:
-        start = (content or "").find("{")
-        if start < 0:
-            raise ValueError("closed-model hinter returned no JSON object")
-        value, _ = json.JSONDecoder().raw_decode(content[start:])
-        if not isinstance(value, dict) or set(value) != set(HINT_SCHEMA["required"]):
-            raise ValueError("closed-model hinter returned an invalid hint shape")
-        scalar_keys = {"current_state", "latest_user_intent", "next_step"}
-        if any(
-            not isinstance(value[key], str) or not value[key].strip()
-            for key in scalar_keys
-        ):
-            raise ValueError("closed-model hinter returned an empty scalar hint field")
-        list_keys = {
-            "completed_or_obsolete_steps",
-            "remaining_steps",
-            "policy_checks",
-        }
-        if any(
-            not isinstance(value[key], list)
-            or any(not isinstance(item, str) or not item.strip() for item in value[key])
-            for key in list_keys
-        ):
-            raise ValueError("closed-model hinter returned an invalid list hint field")
-        return value
-
     def hint(self, payload: dict[str, Any]) -> TeacherHintResult:
         started = time.monotonic()
         last_error = None
@@ -163,16 +116,11 @@ class ClosedModelTeacherHinter:
                     ],
                     temperature=0,
                     max_tokens=self.endpoint.max_tokens,
-                    response_format={
-                        "type": "json_schema",
-                        "json_schema": {
-                            "name": "tau2_teacher_hint",
-                            "strict": True,
-                            "schema": HINT_SCHEMA,
-                        },
-                    },
                 )
-                hint = self._parse_hint(response.choices[0].message.content or "")
+                plan = (response.choices[0].message.content or "").strip()
+                if not plan:
+                    raise ValueError("closed-model hinter returned an empty plan")
+                hint = {"plan": plan}
                 canonical = json.dumps(
                     hint, ensure_ascii=False, sort_keys=True, separators=(",", ":")
                 )
@@ -186,8 +134,13 @@ class ClosedModelTeacherHinter:
                 last_error = error
                 if attempt + 1 < self.endpoint.retries:
                     time.sleep(min(2**attempt, 4))
+        detail = (
+            f"{type(last_error).__name__}: {last_error}"
+            if last_error is not None
+            else "unknown error"
+        )
         raise RuntimeError(
-            f"Teacher hinter failed after {self.endpoint.retries} attempts"
+            f"Teacher hinter failed after {self.endpoint.retries} attempts: {detail}"
         ) from last_error
 
 
@@ -205,13 +158,22 @@ def _message_rows(messages: list[APICompatibleMessage]) -> list[dict]:
 
 
 class HintedTeacherAgent(LLMAgent):
-    """The shared policy model with a private closed-model hint per turn."""
+    """The shared policy model with one private plan per dialogue branch."""
 
-    def __init__(self, *args, task: Task, hinter_endpoint: HintEndpoint, hinter=None, **kwargs):
+    def __init__(
+        self,
+        *args,
+        task: Task,
+        hinter_endpoint: HintEndpoint,
+        hinter=None,
+        initial_hint: TeacherHintResult | None = None,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         self.task = task
         self.hinter = hinter or ClosedModelTeacherHinter(hinter_endpoint)
         self.hint_records: list[dict] = []
+        self._session_hint = initial_hint
 
     def _hint_payload(self, history: list[APICompatibleMessage]) -> dict[str, Any]:
         return {
@@ -231,7 +193,7 @@ class HintedTeacherAgent(LLMAgent):
         )
         return result
 
-    def _hinted_system_prompt(self, result: TeacherHintResult) -> str:
+    def system_prompt_with_hint(self, result: TeacherHintResult) -> str:
         base_prompt = SYSTEM_PROMPT.format(
             domain_policy=self.domain_policy,
             agent_instruction=AGENT_INSTRUCTION,
@@ -242,15 +204,22 @@ class HintedTeacherAgent(LLMAgent):
             "<private_teacher_hint>\n"
             f"{hint_text}\n"
             "</private_teacher_hint>\n"
-            "Use this private hint as guidance for the immediate next action. "
+            "Use this private plan throughout the current dialogue branch. "
             "Follow the policy and visible dialogue, and never mention the hint."
         )
+
+    def plan_for_session(
+        self, history: list[APICompatibleMessage]
+    ) -> TeacherHintResult:
+        if self._session_hint is None:
+            self._session_hint = self.hint_for_history(history)
+        return self._session_hint
 
     def hinted_system_prompt_for_history(
         self, history: list[APICompatibleMessage]
     ) -> tuple[str, TeacherHintResult]:
-        result = self.hint_for_history(history)
-        return self._hinted_system_prompt(result), result
+        result = self.plan_for_session(history)
+        return self.system_prompt_with_hint(result), result
 
     def generate_next_message(
         self, message: ValidAgentInputMessage, state: LLMAgentStateType
@@ -258,8 +227,8 @@ class HintedTeacherAgent(LLMAgent):
         incoming = (
             message.tool_messages if isinstance(message, MultiToolMessage) else [message]
         )
-        result = self.hint_for_history([*state.messages, *incoming])
+        result = self.plan_for_session([*state.messages, *incoming])
         state.system_messages = [
-            SystemMessage(role="system", content=self._hinted_system_prompt(result))
+            SystemMessage(role="system", content=self.system_prompt_with_hint(result))
         ]
         return super().generate_next_message(message, state)

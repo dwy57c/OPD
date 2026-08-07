@@ -129,10 +129,12 @@ def merge_shards(input_root: Path, output_dir: Path, require_complete: bool) -> 
         "missing_task_ids": missing,
         "shards": [path.name for path in shard_dirs],
         "trajectories": len(trajectories),
-        "student_turns": len(student_rows),
+        "student_decisions": len(student_rows),
         "buyer_rows": len(buyer_rows),
-        "cutoffs": sum(int(row.get("cutoff_count", 0)) for row in student_rows),
-        "turn_correctability": [float(row["correctability"]) for row in student_rows],
+        "decision_interventions": len(student_rows),
+        "intervention_advantages": [
+            float(row["intervention_advantage"]) for row in student_rows
+        ],
         "errors": errors,
     }
     output_dir.mkdir(parents=True, exist_ok=True)

@@ -1,5 +1,6 @@
 import asyncio
 from copy import deepcopy
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -20,6 +21,7 @@ from coevo.training.buyer_scheduler import Tau2BuyerScheduler, visible_buyer_con
 @pytest.fixture(autouse=True)
 def disable_external_hinter_for_scheduler_unit_tests(monkeypatch):
     monkeypatch.setenv("COEVO_TEACHER_HINT_MODE", "none")
+    monkeypatch.setenv("COEVO_BUYER_PLAN_MODE", "legacy")
 
 
 def make_response(content: str, token_id: int):
@@ -67,11 +69,11 @@ def test_server_scheduler_executes_final_buyer_action(monkeypatch):
         if append_observation:
             infer_request.messages.append({"role": "user", "content": "student"})
         return {
-            "correctability_reward": len(executed) / 10,
-            "trajectory_correctability": len(executed) / 10,
-            "turn_correctability": [len(executed) / 10],
+            "buyer_reward": len(executed) / 10,
+            "mean_intervention_advantage": len(executed) / 10,
+            "turn_intervention_advantages": [len(executed) / 10],
             "validity": 1.0,
-            "cutoff_count": len(executed),
+            "decision_count": len(executed),
         }, len(executed) == 2
 
     monkeypatch.setattr(scheduler, "_apply_buyer_action", apply_action)
@@ -85,7 +87,7 @@ def test_server_scheduler_executes_final_buyer_action(monkeypatch):
     assert output.response_token_ids == [[11], [22]]
     assert output.response_loss_mask == [[1], [1]]
     assert output.messages[-1] == {"role": "assistant", "content": "final action"}
-    assert output.rollout_infos["correctability_reward"] == 0.2
+    assert output.rollout_infos["buyer_reward"] == 0.2
     assert output.rollout_infos["num_turns"] == 2
 
 
@@ -100,24 +102,24 @@ def test_exhausted_buyer_turn_budget_is_invalid(monkeypatch):
         "_apply_buyer_action",
         lambda *args, **kwargs: (
             {
-                "correctability_reward": 0.5,
-                "trajectory_correctability": 0.5,
-                "turn_correctability": [0.5],
+                "buyer_reward": 0.5,
+                "mean_intervention_advantage": 0.5,
+                "turn_intervention_advantages": [0.5],
                 "validity": 1.0,
-                "cutoff_count": 1,
+                "decision_count": 1,
             },
             False,
         ),
     )
     request = RolloutInferRequest(
         messages=[{"role": "user", "content": "hello"}],
-        data_dict={"turn_correctability": [0.5]},
+        data_dict={"turn_intervention_advantages": [0.5]},
     )
 
     output = asyncio.run(scheduler.run(request, RequestConfig()))
 
     assert output.rollout_infos["validity"] == 0.0
-    assert output.rollout_infos["correctability_reward"] == 0.0
+    assert output.rollout_infos["buyer_reward"] == 0.0
     assert output.rollout_infos["num_turns"] == 1
 
 
@@ -131,7 +133,7 @@ def test_scheduler_uses_domain_split_and_task_from_each_row(monkeypatch):
 
     monkeypatch.setattr(scheduler_module, "Tau2Environment", Environment)
     monkeypatch.setattr(
-        scheduler_module, "build_cutoff_scorer", lambda environment: object()
+        scheduler_module, "build_action_branch_runner", lambda environment: object()
     )
     scheduler = Tau2BuyerScheduler(infer_engine=object(), max_turns=2)
 
@@ -185,8 +187,10 @@ def test_buyer_action_applies_environment_transition_validity(monkeypatch):
 
     class Scorer:
         @staticmethod
-        def score_turn(history, message_index):
-            return {"correctability": 0.75, "cutoffs": [{"id": 1}]}
+        def run(decision):
+            return SimpleNamespace(
+                to_dict=lambda: {"intervention_advantage": 0.75}
+            )
 
     scheduler = Tau2BuyerScheduler(infer_engine=object(), max_turns=2)
     monkeypatch.setattr(scheduler, "_context", lambda data: (Environment(), Scorer()))
@@ -203,9 +207,11 @@ def test_buyer_action_applies_environment_transition_validity(monkeypatch):
     )
 
     assert finished is False
-    assert infos["validity"] == 0.0
-    assert infos["turn_correctability"] == [0.75]
-    assert infos["correctability_reward"] == 0.0
+    # Student tool errors are precisely the weaknesses the Buyer should expose;
+    # they do not invalidate an otherwise legal Buyer action.
+    assert infos["validity"] == 1.0
+    assert infos["turn_intervention_advantages"] == [0.75]
+    assert infos["buyer_reward"] == 0.75
     assert buyer_contents == ["I still need help."]
     assert request.data_dict["tau_history"][0]["content"] == "I still need help."
     assert request.messages[-1] == {"role": "user", "content": "Please try again."}
@@ -239,7 +245,7 @@ def test_unclosed_thinking_is_an_invalid_empty_buyer_action(monkeypatch):
 
     assert finished is True
     assert infos["validity"] == 0.0
-    assert infos["correctability_reward"] == 0.0
+    assert infos["buyer_reward"] == 0.0
     assert request.data_dict["tau_history"][0]["content"] is None
 
 
@@ -322,10 +328,58 @@ def test_truncated_buyer_output_is_invalid_and_not_executed(monkeypatch):
     )
     request = RolloutInferRequest(
         messages=[{"role": "user", "content": "hello"}],
-        data_dict={"turn_correctability": [0.5]},
+        data_dict={"turn_intervention_advantages": [0.5]},
     )
     output = asyncio.run(scheduler.run(request, RequestConfig()))
 
     assert output.rollout_infos["validity"] == 0.0
-    assert output.rollout_infos["correctability_reward"] == 0.0
+    assert output.rollout_infos["buyer_reward"] == 0.0
     assert output.rollout_infos["num_turns"] == 1
+
+
+def test_structured_plan_is_private_and_only_rendered_action_reaches_tau2(monkeypatch):
+    class Environment:
+        @staticmethod
+        def available_user_tool_names():
+            return ()
+
+        @staticmethod
+        def buyer_stopped(message):
+            return False
+
+        @staticmethod
+        def advance_student(history):
+            return [*history, AssistantMessage(role="assistant", content="Student")]
+
+    class Scorer:
+        @staticmethod
+        def run(decision):
+            return SimpleNamespace(
+                to_dict=lambda: {"intervention_advantage": 0.25}
+            )
+
+    scheduler = Tau2BuyerScheduler(infer_engine=object(), max_turns=2)
+    scheduler.base_config = replace(scheduler.base_config, buyer_plan_mode="structured")
+    monkeypatch.setattr(scheduler, "_context", lambda data: (Environment(), Scorer()))
+    request = RolloutInferRequest(
+        messages=[{"role": "user", "content": "hello"}],
+        data_dict={"tau_history": []},
+    )
+    private_plan = (
+        '{"diagnosis":{"failure_type":"missing_confirmation",'
+        '"evidence_turns":[1]},"target_skill":"policy_compliance",'
+        '"next_move":"ask_about_cost","payload":{},'
+        '"predicted_takeover_gain":0.4,"stop":false}'
+    )
+
+    infos, finished = scheduler._apply_buyer_action(
+        request, make_response(private_plan, 9).choices[0], append_observation=True
+    )
+
+    assert finished is False
+    assert infos["validity"] == 1.0
+    assert request.data_dict["tau_history"][0]["content"] == (
+        "What will the total cost be, including all fees?"
+    )
+    assert private_plan not in str(request.data_dict["tau_history"])
+    assert request.data_dict["buyer_private_plans"][0]["next_move"] == "ask_about_cost"

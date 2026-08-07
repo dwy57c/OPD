@@ -25,7 +25,7 @@ python -m swift.cli.rlhf \
   --external_plugins "$COEVO_ROOT/coevo/training/swift_plugin.py" \
   --dataset "$DATA" \
   --remove_unused_columns false \
-  --reward_funcs tau2_correctability \
+  --reward_funcs tau2_buyer_utility \
   --tuner_type lora \
   --lora_rank 8 \
   --lora_alpha 16 \

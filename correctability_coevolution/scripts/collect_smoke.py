@@ -6,7 +6,6 @@ from pathlib import Path
 import sys
 
 from loguru import logger
-from tau2.agent.llm_agent import LLMGTAgent
 from tau2.run import get_tasks
 
 from coevo.config import InfraConfig
@@ -38,13 +37,8 @@ def main() -> None:
         parser.error("--all-compatible and --task-ids are mutually exclusive")
     if args.all_compatible:
         tasks = get_tasks(config.domain, task_split_name=config.task_split)
-        compatible = [
-            str(task.id) for task in tasks if LLMGTAgent.check_valid_task(task)
-        ]
-        skipped = [
-            str(task.id) for task in tasks if not LLMGTAgent.check_valid_task(task)
-        ]
-        task_ids = compatible[args.shard_index :: args.num_shards]
+        all_task_ids = [str(task.id) for task in tasks]
+        task_ids = all_task_ids[args.shard_index :: args.num_shards]
         args.output_dir.mkdir(parents=True, exist_ok=True)
         (args.output_dir / "selection.json").write_text(
             json.dumps(
@@ -53,9 +47,8 @@ def main() -> None:
                     "task_split": config.task_split,
                     "num_shards": args.num_shards,
                     "shard_index": args.shard_index,
-                    "compatible_task_ids": task_ids,
-                    "all_compatible_task_ids": compatible,
-                    "incompatible_task_ids": skipped,
+                    "task_ids": task_ids,
+                    "all_task_ids": all_task_ids,
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -64,7 +57,7 @@ def main() -> None:
         )
         print(
             f"[collect] shard={args.shard_index}/{args.num_shards} "
-            f"selected={len(task_ids)} incompatible={len(skipped)}",
+            f"selected={len(task_ids)} total={len(all_task_ids)}",
             flush=True,
         )
     else:
