@@ -2,35 +2,83 @@ from dataclasses import replace
 import json
 from pathlib import Path
 
+from coevo.artifacts import (
+    artifact_metadata,
+    dataset_fingerprint,
+    validate_compatible_artifacts,
+)
 from coevo.config import InfraConfig
 from coevo.environment import Tau2Environment
-from coevo.rollout import NaturalDecisionCollector, build_action_branch_runner
+from coevo.rollout import NaturalDecisionCollector, build_teacher_target_labeler
 
 
 def _write_json(path: Path, value) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n")
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n")
+    temporary.replace(path)
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows))
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(
+        "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows)
+    )
+    temporary.replace(path)
 
 
-def _read_jsonl(path: Path) -> list[dict]:
+def _validate_resume_fingerprint(
+    summary: dict,
+    records: list[dict],
+    student_rows: list[dict],
+    buyer_rows: list[dict],
+) -> None:
+    expected = summary.get("dataset_fingerprint")
+    if not expected:
+        raise ValueError(
+            "summary.json is missing dataset_fingerprint; recollect or migrate "
+            "before resume"
+        )
+    actual = dataset_fingerprint(records, student_rows, buyer_rows)
+    if actual != expected:
+        raise ValueError(
+            "collection artifacts do not match summary.json dataset_fingerprint; "
+            "refusing resume after a partial or modified write"
+        )
+
+
+def _read_jsonl(path: Path, schema_version: int) -> list[dict]:
     if not path.is_file():
         return []
-    return [json.loads(line) for line in path.read_text().splitlines() if line]
+    rows = [json.loads(line) for line in path.read_text().splitlines() if line]
+    incompatible = sorted(
+        {
+            row.get("schema_version")
+            for row in rows
+            if row.get("schema_version") != schema_version
+        },
+        key=lambda value: str(value),
+    )
+    if incompatible:
+        raise ValueError(
+            f"{path} contains incompatible schema versions {incompatible}; "
+            f"expected {schema_version}. Recollect or migrate before resume."
+        )
+    return rows
 
 
 def _build_summary(
     config: InfraConfig,
     task_ids: list[str],
     records: list[dict],
+    student_rows: list[dict],
+    buyer_rows: list[dict],
     errors: list[dict],
 ) -> dict:
     completed = {str(record["task_id"]) for record in records}
     return {
+        **artifact_metadata(config),
         "domain": config.domain,
         "task_split": config.task_split,
         "task_ids": task_ids,
@@ -39,15 +87,24 @@ def _build_summary(
         "student_decisions": sum(
             len(record["student_decisions"]) for record in records
         ),
-        "decision_interventions": sum(
-            len(record["student_decisions"]) for record in records
-        ),
-        "intervention_advantages": [
-            turn["intervention_advantage"]
+        "student_training_rows": len(student_rows),
+        "rejected_teacher_targets": sum(
+            not bool(turn.get("student_eligible"))
             for record in records
             for turn in record["student_decisions"]
-            if "intervention_advantage" in turn
+        ),
+        "buyer_rows": len(buyer_rows),
+        "teacher_target_hashes": [
+            turn["teacher_target_hash"]
+            for record in records
+            for turn in record["student_decisions"]
+            if turn.get("student_eligible")
         ],
+        "dataset_fingerprint": dataset_fingerprint(
+            records,
+            student_rows,
+            buyer_rows,
+        ),
         "errors": errors,
     }
 
@@ -64,7 +121,14 @@ def _persist(
     _write_jsonl(output_dir / "trajectories.jsonl", records)
     _write_jsonl(output_dir / "student_gkd.jsonl", student_rows)
     _write_jsonl(output_dir / "buyer_grpo.jsonl", buyer_rows)
-    summary = _build_summary(config, task_ids, records, errors)
+    summary = _build_summary(
+        config,
+        task_ids,
+        records,
+        student_rows,
+        buyer_rows,
+        errors,
+    )
     _write_json(output_dir / "summary.json", summary)
     return summary
 
@@ -78,13 +142,70 @@ def collect_dataset(
     continue_on_error: bool = False,
     resume: bool = False,
 ) -> dict:
-    records = _read_jsonl(output_dir / "trajectories.jsonl") if resume else []
-    student_rows = _read_jsonl(output_dir / "student_gkd.jsonl") if resume else []
-    buyer_rows = _read_jsonl(output_dir / "buyer_grpo.jsonl") if resume else []
+    records = (
+        _read_jsonl(
+            output_dir / "trajectories.jsonl", config.dataset_schema_version
+        )
+        if resume
+        else []
+    )
+    student_rows = (
+        _read_jsonl(
+            output_dir / "student_gkd.jsonl", config.dataset_schema_version
+        )
+        if resume
+        else []
+    )
+    buyer_rows = (
+        _read_jsonl(
+            output_dir / "buyer_grpo.jsonl", config.dataset_schema_version
+        )
+        if resume
+        else []
+    )
     errors = []
-    if resume and (output_dir / "summary.json").is_file():
-        previous_summary = json.loads((output_dir / "summary.json").read_text())
+    contract_values = [("current collection config", artifact_metadata(config))]
+    for filename, rows in (
+        ("trajectories.jsonl", records),
+        ("student_gkd.jsonl", student_rows),
+        ("buyer_grpo.jsonl", buyer_rows),
+    ):
+        contract_values.extend(
+            (f"{filename}:{index}", row)
+            for index, row in enumerate(rows, start=1)
+        )
+    summary_path = output_dir / "summary.json"
+    artifact_paths = [
+        output_dir / "trajectories.jsonl",
+        output_dir / "student_gkd.jsonl",
+        output_dir / "buyer_grpo.jsonl",
+    ]
+    if (
+        resume
+        and any(path.is_file() for path in artifact_paths)
+        and not summary_path.is_file()
+    ):
+        raise ValueError(
+            "collection rows exist without summary.json; refusing an unverifiable "
+            "resume"
+        )
+    if resume and summary_path.is_file():
+        previous_summary = json.loads(summary_path.read_text())
+        if previous_summary.get("schema_version") != config.dataset_schema_version:
+            raise ValueError(
+                "summary.json has an incompatible schema version; recollect or "
+                "migrate before resume"
+            )
+        _validate_resume_fingerprint(
+            previous_summary,
+            records,
+            student_rows,
+            buyer_rows,
+        )
+        contract_values.append(("summary.json", previous_summary))
         errors = list(previous_summary.get("errors", []))
+    if resume:
+        validate_compatible_artifacts(contract_values)
     completed = {(str(record["task_id"]), int(record["seed"])) for record in records}
 
     for task_index, task_id in enumerate(task_ids, start=1):
@@ -92,8 +213,8 @@ def collect_dataset(
         environment = Tau2Environment(replace(config, task_id=task_id))
         collector = NaturalDecisionCollector(
             environment,
-            build_action_branch_runner(environment),
-            max_decisions=environment.config.max_intervention_decisions,
+            build_teacher_target_labeler(environment),
+            max_decisions=environment.config.max_teacher_targets,
         )
         for trajectory_index in range(trajectories_per_task):
             seed = config.seed + trajectory_index

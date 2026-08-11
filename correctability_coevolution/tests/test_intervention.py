@@ -4,13 +4,13 @@ import pytest
 from tau2.data_model.message import AssistantMessage, ToolCall, UserMessage
 
 from coevo.intervention import (
-    ActionBranchRunner,
     DecisionState,
     TeacherActionGenerator,
     TeacherActionResult,
     extract_decision_states,
 )
 from coevo.rewards import soft_completion_score
+from coevo.scoring import TeacherTargetLabeler, TeacherTargetValidator
 
 
 def reward_info(action, communication, database, environment, nl):
@@ -78,7 +78,62 @@ def test_decision_state_uses_complete_text_or_parallel_tool_action():
     assert decisions[1].state_hash != decisions[1].sample_hash
 
 
-def test_one_teacher_action_then_paired_student_continuations():
+@pytest.mark.parametrize(
+    "action",
+    [
+        AssistantMessage(role="assistant", content=""),
+        AssistantMessage(
+            role="assistant",
+            content="mixed",
+            tool_calls=[
+                ToolCall(
+                    id="a",
+                    name="lookup",
+                    arguments={},
+                    requestor="assistant",
+                )
+            ],
+        ),
+    ],
+)
+def test_decision_state_extraction_rejects_empty_or_mixed_actions(action):
+    history = [UserMessage(role="user", content="help"), action]
+
+    with pytest.raises(ValueError):
+        extract_decision_states(history)
+
+
+def test_main_target_labeler_does_not_run_a_takeover_continuation():
+    class Environment:
+        config = SimpleNamespace(seed=7)
+
+        @staticmethod
+        def continue_to_terminal(*args, **kwargs):
+            raise AssertionError("main Teacher target generation must not continue")
+
+    state = DecisionState.from_history(
+        [
+            UserMessage(role="user", content="help"),
+            AssistantMessage(role="assistant", content="mistake"),
+        ],
+        1,
+    )
+    generator = TeacherActionGenerator(
+        Environment(),
+        action_provider=lambda decision, seed: TeacherActionResult(
+            AssistantMessage(role="assistant", content="repair"), {"seed": seed}
+        ),
+    )
+
+    result = TeacherTargetLabeler(
+        Environment(), teacher_generator=generator
+    ).run(state)
+
+    assert result.teacher_action.action.content == "repair"
+    assert result.teacher_action.hint == {"seed": 7}
+
+
+def test_analysis_validator_can_run_one_sided_student_continuations():
     calls = []
 
     class Environment:
@@ -110,17 +165,15 @@ def test_one_teacher_action_then_paired_student_continuations():
             AssistantMessage(role="assistant", content="repair"), {"seed": seed}
         ),
     )
-    runner = ActionBranchRunner(
+    runner = TeacherTargetValidator(
         Environment(), continuations=2, teacher_generator=generator
     )
 
     result = runner.run(state)
 
-    assert result.intervention_advantage == 1.0
+    assert result.teacher_quality == 1.0
     assert result.teacher_action.hint == {"seed": 7}
     assert calls == [
-        ("mistake", "student", 7),
         ("repair", "student", 7),
-        ("mistake", "student", 8),
         ("repair", "student", 8),
     ]

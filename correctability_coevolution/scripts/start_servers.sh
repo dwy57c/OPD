@@ -16,6 +16,10 @@ trap cleanup_partial_start ERR INT TERM
 python "$COEVO_ROOT/scripts/preflight.py" start
 "$COEVO_ROOT/scripts/start_role.sh" policy "$COEVO_POLICY_PATH"
 started+=(policy)
+if [[ -n ${COEVO_PREVIOUS_POLICY_PATH:-} ]]; then
+  "$COEVO_ROOT/scripts/start_role.sh" policy_previous "$COEVO_PREVIOUS_POLICY_PATH"
+  started+=(policy_previous)
+fi
 "$COEVO_ROOT/scripts/start_role.sh" buyer "$COEVO_BUYER_PATH"
 started+=(buyer)
 "$COEVO_ROOT/scripts/start_role.sh" rollout "$COEVO_BUYER_PATH"

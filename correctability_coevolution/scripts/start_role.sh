@@ -25,7 +25,26 @@ case "$ROLE" in
       --tensor-parallel-size "$TP_SIZE" --port "$PORT" \
       --max-model-len "${COEVO_POLICY_MAX_MODEL_LEN:-16384}" \
       --gpu-memory-utilization "${COEVO_POLICY_GPU_MEMORY_UTILIZATION:-0.88}" \
-      --max-num-seqs "${COEVO_POLICY_MAX_NUM_SEQS:-8}" --max-logprobs 20 \
+      --max-num-seqs "${COEVO_POLICY_MAX_NUM_SEQS:-8}" \
+      --max-logprobs "${COEVO_TEACHER_GAP_TOPK:-20}" \
+      --disable-custom-all-reduce \
+      --enable-auto-tool-choice --tool-call-parser hermes \
+      > "$RUNTIME/logs/$ROLE_KEY.log" 2>&1 &
+    ;;
+  policy_previous)
+    GPU=${COEVO_PREVIOUS_POLICY_GPUS:-4}
+    PORT=${COEVO_PREVIOUS_POLICY_PORT:-8001}
+    IFS=, read -r -a PREVIOUS_POLICY_GPU_IDS <<< "$GPU"
+    TP_SIZE=${COEVO_PREVIOUS_POLICY_TP_SIZE:-${#PREVIOUS_POLICY_GPU_IDS[@]}}
+    SERVED_MODEL=${COEVO_PREVIOUS_POLICY_MODEL:-${COEVO_POLICY_MODEL:-Qwen3-4B}}
+    CUDA_VISIBLE_DEVICES="$GPU" nohup setsid python -m vllm.entrypoints.openai.api_server \
+      --model "$MODEL_PATH" --served-model-name "$SERVED_MODEL" \
+      --tensor-parallel-size "$TP_SIZE" --port "$PORT" \
+      --max-model-len "${COEVO_PREVIOUS_POLICY_MAX_MODEL_LEN:-16384}" \
+      --gpu-memory-utilization \
+        "${COEVO_PREVIOUS_POLICY_GPU_MEMORY_UTILIZATION:-0.88}" \
+      --max-num-seqs "${COEVO_PREVIOUS_POLICY_MAX_NUM_SEQS:-8}" \
+      --max-logprobs "${COEVO_TEACHER_GAP_TOPK:-20}" \
       --disable-custom-all-reduce \
       --enable-auto-tool-choice --tool-call-parser hermes \
       > "$RUNTIME/logs/$ROLE_KEY.log" 2>&1 &

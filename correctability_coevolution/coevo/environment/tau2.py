@@ -171,6 +171,16 @@ class Tau2Environment:
         seed: int | None = None,
         teacher_hint=None,
     ) -> SimulationRun:
+        if (
+            history
+            and isinstance(history[-1], (AssistantMessage, UserMessage))
+            and history[-1].is_tool_call()
+        ):
+            # A natural macro-action includes dispatching its tool call.  τ²'s
+            # state replay deliberately rejects a dangling call, so materialize
+            # its deterministic environment response before handing control back
+            # to the Student continuation.
+            history = self.execute_pending_tools(history)
         orchestrator = self.orchestrator(
             history, policy, seed=seed, teacher_hint=teacher_hint
         )
@@ -344,16 +354,18 @@ class Tau2Environment:
                 break
         return orchestrator.get_trajectory()
 
-    def execute_user_tools(self, history: list[Message]) -> list[Message]:
-        if not history or not isinstance(history[-1], UserMessage):
-            raise ValueError("User tool execution requires a final UserMessage")
+    def execute_pending_tools(self, history: list[Message]) -> list[Message]:
+        if not history or not isinstance(history[-1], (AssistantMessage, UserMessage)):
+            raise ValueError(
+                "Pending tool execution requires a final AssistantMessage or UserMessage"
+            )
         pending_message = history[-1]
         if not pending_message.is_tool_call():
-            raise ValueError("Final UserMessage does not contain a tool call")
+            raise ValueError("Final message does not contain a tool call")
 
         # τ² replays completed tool call/response pairs while restoring state. A pending
         # call cannot be included in that replay, so restore the completed prefix first
-        # and execute the new user call against the reconstructed environment.
+        # and execute the new call against the reconstructed environment.
         replay = self.orchestrator(history[:-1], "student")
         replay.initialize()
         observations = [
@@ -361,6 +373,11 @@ class Tau2Environment:
             for tool_call in pending_message.tool_calls
         ]
         return [*history, *observations]
+
+    def execute_user_tools(self, history: list[Message]) -> list[Message]:
+        if not history or not isinstance(history[-1], UserMessage):
+            raise ValueError("User tool execution requires a final UserMessage")
+        return self.execute_pending_tools(history)
 
     @staticmethod
     def buyer_message(content: str, tool_calls=None) -> UserMessage:

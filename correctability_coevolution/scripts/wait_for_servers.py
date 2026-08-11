@@ -16,6 +16,11 @@ def main() -> None:
     parser.add_argument("--health-path", default="/v1/models")
     parser.add_argument("--log-file", type=Path)
     args = parser.parse_args()
+    session = requests.Session()
+    # Every managed inference endpoint is local.  Inherited HTTP(S)_PROXY
+    # variables can otherwise route loopback health checks through an external
+    # proxy even when the service is listening successfully.
+    session.trust_env = False
     deadline = time.time() + args.timeout
     pending = set(args.urls)
     while pending and time.time() < deadline:
@@ -34,7 +39,7 @@ def main() -> None:
         for url in list(pending):
             try:
                 endpoint = url.rstrip("/") + "/" + args.health_path.lstrip("/")
-                response = requests.get(endpoint, timeout=5)
+                response = session.get(endpoint, timeout=5)
                 if response.ok:
                     detail = args.health_path
                     if args.model is not None:

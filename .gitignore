@@ -1,6 +1,7 @@
 .env
 .venv/
 third_party/
+legacy/
 
 **/__pycache__/
 **/.pytest_cache/

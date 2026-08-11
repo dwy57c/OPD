@@ -1,186 +1,212 @@
-# Reproducible Runtime Setup
+# Local setup and execution
 
-这套运行方式不需要宿主机 `sudo`。推荐使用当前机器已有的 Swift 4.1.3 / vLLM
-基础镜像，在镜像构建阶段安装 τ²-Bench v1.0.0 和本项目代码。
+The runtime is local-model only by default. Do not permit Hugging Face or
+ModelScope downloads unless the user explicitly changes that policy.
 
-## 1. 准备配置
+## 1. Configure local paths
 
-在仓库根目录执行：
+From the repository root:
 
 ```bash
 cp .env.example .env
 ```
 
-设置 Student/Teacher 共享的唯一 policy checkpoint 目录：
-
-```text
-COEVO_POLICY_MODEL_DIR=/宿主机上的/Qwen3-4B
-```
-
-Compose 将它只读挂载到 `/models/policy`。Student 与 Teacher 都调用这一模型；
-Teacher 的额外能力来自 `COEVO_TEACHER_HINT_*` 配置的闭源 hinter。Buyer 默认也从
-该 checkpoint 初始化；若不使用容器，可覆盖 `.env` 中的 `COEVO_POLICY_PATH` 和
-`COEVO_BUYER_PATH`。
-
-如果本机缺少 Qwen3-4B，可在构建运行镜像后从宿主机下载。脚本会继承已有代理
-变量、不需要 sudo，并校验权重、配置与 tokenizer 的 SHA-256 是否与固定
-Hugging Face revision 完全一致：
+Set at least:
 
 ```bash
-./correctability_coevolution/scripts/download_qwen3_4b.sh \
-  /mnt/disk2/models/Qwen3-4B
+COEVO_POLICY_MODEL_DIR=/absolute/host/path/to/Qwen3-4B
+COEVO_ALLOW_DOWNLOADS=0
+COEVO_REPORT_TO=wandb
 ```
 
-## 2. 获取固定版本上游源码
+Inside the container the model is mounted read-only at `/models/policy` and is
+used as the initial Student, self-Teacher, and Buyer initialization. The
+controller fills `COEVO_PREVIOUS_POLICY_PATH` only after the Student update.
+
+Do not place API keys in `.env` committed to source control. The closed-model
+hint service and W&B credentials must be injected through the runtime
+environment.
+
+## 2. Start the existing runtime
 
 ```bash
-./correctability_coevolution/scripts/bootstrap_upstreams.sh
-```
-
-脚本使用 sparse checkout，只拉取运行所需的 τ² 文件。容器基础镜像固定 Swift
-4.1.3；如需同时审查或在宿主环境 editable-install 对应 Swift 源码，增加
-`--with-swift-source` 或 `--install`。固定版本为：
-
-```text
-tau2-bench: 17e07b1da2bbc0cadfddeea36412686e0604127b (v1.0.0)
-ms-swift:   c6875ef6a962e83f01138bb239b5fb4e5e55b37f
-```
-
-上游源码写入被 Git 忽略的 `third_party/`，不会进入本项目提交。
-
-τ² v1 的项目元数据要求 Python `>=3.12,<3.14`。现有 Swift 4.1.3 / vLLM 基础
-镜像固定为 Python 3.11，不能脱离同一解释器复用已安装的 CUDA/PyTorch 扩展；因此
-Dockerfile 对未经修改的 v1 源码使用明确的 `--ignore-requires-python` 兼容模式。
-当前 API、真实数据和全部测试均在该镜像验证，preflight 会把它显示为 `WARN`，而非
-冒充官方支持。v1 的文本入口会导入 voice 模块，因此镜像也安装其官方 voice extras
-和 PortAudio headers；这些安装发生在容器内，不需要宿主机 sudo。
-
-## 3. 构建并进入容器
-
-```bash
-docker compose build coevo
 docker compose up -d coevo
-docker exec -it swift-grpo-dev bash
+docker compose exec coevo bash
 ```
 
-容器内工作目录已经是：
-
-```text
-/workspace/OPD/correctability_coevolution
-```
-
-如果使用其他基础镜像，在 `.env` 中覆盖 `COEVO_BASE_IMAGE`。基础镜像必须提供
-CUDA、PyTorch、vLLM、TRL 和 ms-swift 4.1.3；构建过程会检查 Swift 版本。
-
-## 4. 运行预检
-
-只检查 Python、依赖和固定版本上游：
+Inside the container:
 
 ```bash
+cd /workspace/OPD/correctability_coevolution
 python scripts/preflight.py python
-```
-
-启动服务前检查模型、端口、GPU 布局和显存占用：
-
-```bash
 python scripts/preflight.py start
-```
-
-服务启动后检查三个 endpoint 和 Trainer GPU：
-
-```bash
-python scripts/preflight.py services
-```
-
-预检默认拒绝在已有进程占用超过 2 GiB 显存的目标 GPU 上启动。只有在明确确认
-显存可以安全共存时，才设置 `COEVO_ALLOW_BUSY_GPUS=1`。
-
-## 5. 测试与最小真实 smoke
-
-系统只使用完整自然决策边界：
-
-```text
-COEVO_BUYER_PLAN_MODE=structured
-```
-
-它在完整 Student action（文本或一组协议允许的并行 tool calls）后建立 Student / 单次
-Teacher takeover 分支，两个分支立即交回同一 Student，并用相同 seed 的冻结 continuation
-user 计算 category-balanced soft completion 差值。Buyer 只生成 private JSON plan；只有
-冻结 Renderer 的 public action 会进入 Student、Teacher 和 verifier history。运行、采集、
-Student 数据构造和 Buyer reward 中都不存在句内 token/字符 cutoff 分支。
-
-`COEVO_CONTINUATIONS` 控制 paired continuation 数量；
-`COEVO_MAX_INTERVENTION_DECISIONS=0` 表示评估轨迹中全部自然 Student actions。正式跑
-Buyer-GRPO 前应先完成 structured-plan SFT 和 reward calibration gate；不要直接把旧
-free-form Buyer checkpoint 当成 structured Planner。
-
-```bash
-ruff check .
 pytest -q
-./scripts/start_servers.sh
-python scripts/run_coevolution.py \
-  --output-dir artifacts/full_smoke \
-  --rounds 1 \
-  --student-steps 1 \
-  --buyer-steps 1 \
+```
+
+`preflight.py` verifies pinned Python packages, τ² data/revision, local model
+files, GPU assignment, port conflicts, and `report_to=wandb`.
+
+## 3. Service layout
+
+| Role | Port | Default GPU variable | Purpose |
+|---|---:|---|---|
+| `policy` | 8000 | `COEVO_POLICY_GPUS` | current Student and current self-Teacher |
+| `policy_previous` | 8001 | `COEVO_PREVIOUS_POLICY_GPUS` | frozen pre-update Student during Buyer GRPO |
+| `buyer` | 8002 | `COEVO_BUYER_GPUS` | Buyer reference endpoint |
+| `rollout` | 8003 | `COEVO_BUYER_ROLLOUT_GPUS` | Swift online rollout server |
+
+At initial collection there is no previous role. After `S_k -> S_(k+1)`, the
+controller starts `S_k` on port 8001 and `S_(k+1)` on port 8000, verifies both,
+then starts Buyer GRPO.
+
+Manual role commands:
+
+```bash
+./scripts/start_role.sh policy /models/policy
+./scripts/start_role.sh policy_previous /path/to/pre-update-checkpoint
+./scripts/start_role.sh buyer /models/policy
+./scripts/start_role.sh rollout /models/policy
+
+./scripts/stop_role.sh rollout
+./scripts/stop_role.sh policy_previous
+./scripts/stop_role.sh policy
+./scripts/stop_role.sh buyer
+```
+
+Role scripts only stop PIDs recorded in this project's runtime registry.
+
+## 4. Required objective configuration
+
+```bash
+COEVO_TEACHER_GAP_TOPK=20
+COEVO_TEACHER_GAP_MIN_SUPPORT_MASS=0.95
+COEVO_TEACHER_GAP_EPS=1e-8
+
+COEVO_SKILL_GATE_METRIC=forward_kl
+COEVO_SKILL_GATE_LOW=0.0
+COEVO_SKILL_GATE_HIGH=0.05
+COEVO_SKILL_SHARPEN_T_MIN=0.7
+
+# Analysis only; main collection and Buyer reward do not run this continuation.
+COEVO_TEACHER_VALIDATION_CONTINUATIONS=1
+
+COEVO_DATASET_SCHEMA_VERSION=4
+COEVO_TARGET_SCHEMA_VERSION=2
+COEVO_TEACHER_TARGET_VERSION=skill-contrast-sharpened-v2
+```
+
+Only one Buyer reward is registered: `tau2_stage_learning_progress`. There is no
+runtime reward-mode selector or single-checkpoint fallback. Both Buyer training
+scripts pass `--scale_rewards group`.
+
+Skill thresholds and `T_min` should be calibrated once on a held-out calibration
+split and frozen before matched scientific comparisons.
+
+## 5. Collect a Student dataset
+
+With the current policy, Buyer reference, and hint service healthy:
+
+```bash
+python scripts/collect_round.py \
+  --output-dir artifacts/round_0000/data \
   --task-ids 1
 ```
 
-`start_servers.sh` 会在任一角色启动失败时停止已经启动的本项目服务。
-`run_coevolution.py` 会持续写 `manifest.json`；失败时记录 phase 和异常，并在模型
-服务刷新失败时尝试恢复上一版 checkpoint。
+Outputs:
 
-本机 2026-08-03 的最小真实验收已通过：旧架构的四个服务启动、官方 v1
-`airline/train` task 1 采集、Student gated-GKD 1 step，以及官方
-`retail/train` task 0 的 Buyer masked-GRPO 1 step。产物位于
-`artifacts/v1_infra_smoke/` 和 `artifacts/v1_buyer_reward_smoke/`。Buyer 验收得到
-`reward=0.125`、`reward_std=0.1944` 和非零梯度。这两个训练 smoke 使用 LoRA 节省
-验收时间；正式入口仍是 `train_student_full.sh` / `train_buyer_full.sh` 的全参训练。
-
-当前固定 vLLM 0.19.1 在这台 A100 节点上使用 2-way TP custom all-reduce 会在 KV
-cache profiling 阶段触发 CUDA `invalid argument`，所以 Policy 启动脚本显式传入
-`--disable-custom-all-reduce` 并使用 NCCL。Swift 对本地 Qwen3 目录也显式设置
-`--model_type qwen3 --template qwen3_nothinking`，不依赖自动推断。
-Buyer completion 默认上限为 512 token；此前 128 token 的真实 smoke 会让全部样本以
-`finish_reason=length` 结束，只能验证截断保护分支，无法验收在线 τ² scorer。可用
-`COEVO_BUYER_MAX_COMPLETION_LENGTH` 调整，但不应把截断样本当成有效 reward。
-
-v1 retail/telecom 的部分任务将 NL assertion 放入 reward basis。judge 与 Teacher
-hint 是两条独立路径，并用 `COEVO_NL_JUDGE_MODEL`、`COEVO_NL_JUDGE_URL` 和
-`COEVO_NL_JUDGE_MAX_TOKENS` 配置。最终 benchmark 仍使用 τ² 原生 evaluator 的固定
-外部 judge。每个服务以独立 Unix process group 启动，`stop_role.sh` 会同时停止父服务
-和 `VLLM::EngineCore` 子进程。
-
-## 6. 独立 benchmark user 评测
-
-训练时的 Buyer 是可学习 Qwen3-4B，intervention continuation 使用独立冻结的 Buyer
-reference。最终评测不要使用训练后的 Buyer；在 Student 服务已经启动后，用固定
-user simulator 运行原生 τ² evaluator：
-
-```bash
-export OPENAI_API_KEY=...
-COEVO_EVAL_SAVE_TO=student_gpt41_airline \
-./scripts/evaluate_student.sh 2 6
+```text
+trajectories.jsonl   full audit records, including rejected targets
+student_gkd.jsonl    accepted cached TeacherTargetRecord rows
+buyer_grpo.jsonl     Buyer prompts for later online GRPO
+summary.json         schema, provenance, counts, hashes, and errors
 ```
 
-位置参数是可选 task ID；不传时默认跑该 domain 的整个 `test` split。训练/收集默认
-使用 `train` split，可分别用 `COEVO_TASK_SPLIT` 和 `COEVO_EVAL_TASK_SPLIT` 覆盖。
-v1.0.0 官方示例使用 `gpt-4.1` 作为 user simulator，模型可由
-`COEVO_EVAL_USER_MODEL` 覆盖。
-环境本身不是 LLM：它始终由 τ² 的数据库、工具、policy、task 初始状态和 verifier
-组成。
+Student eligibility requires a complete Teacher action, exact target alignment,
+valid hinted/unhinted distributions, and sufficient Teacher support mass.
+The main collector does not run a Teacher takeover continuation or terminal
+quality scorer.
 
-## 7. 可配置资源
+## 6. Run one complete alternating round
 
-默认布局占用四张 GPU；Policy 与 Buyer Trainer 按 phase 顺序运行：
+The canonical entry point is:
 
-| 角色 | 默认 GPU | 默认端口 |
-|---|---:|---:|
-| Student/Teacher 共享 Policy | 0 | 8000 |
-| Buyer reference | 1 | 8002 |
-| Buyer rollout | 2 | 8003 |
-| 当前 phase Trainer | 3 | - |
+```bash
+python scripts/run_coevolution.py \
+  --output-dir artifacts/stage_run \
+  --rounds 1 \
+  --student-steps 1 \
+  --buyer-steps 1 \
+  --task-ids 1 \
+  --start-services
+```
 
-GPU、端口、模型路径、Buyer 最大动作数都可以通过 `.env.example` 中对应的
-`COEVO_*` 变量覆盖。Student 和 Buyer Trainer 按 phase 顺序运行，可以使用同一张
-Trainer GPU；服务 GPU 与 Trainer GPU 不能重叠。
+The controller performs:
+
+```text
+collect D_k
+train Student S_k -> S_(k+1)
+serve S_k and S_(k+1)
+preflight both endpoints
+train Buyer B_k -> B_(k+1)
+atomically commit manifest
+```
+
+Use `--resume --start-services` only when reusing an existing output directory.
+Resume validates schema, target version, reward formula, task IDs, and exact
+checkpoint identities before any work.
+
+## 7. Isolated Student smoke
+
+Start the current policy role, then build a fixture from real current-policy
+prompt logits:
+
+```bash
+./scripts/start_role.sh policy /models/policy
+
+python scripts/make_student_smoke_fixture.py \
+  --model-path /models/policy \
+  --policy-url http://127.0.0.1:8000 \
+  --output artifacts/infra_smoke/student_gkd.jsonl
+
+WANDB_MODE=offline ./scripts/train_student_smoke.sh \
+  artifacts/infra_smoke/student_gkd.jsonl \
+  artifacts/infra_smoke/student_adapter
+```
+
+This verifies real logits, target caching, finite unweighted forward-KL,
+non-zero target gradients, W&B reporting, checkpoint save, and reload. It is not
+a τ² capability result.
+
+## 8. Buyer smoke prerequisites
+
+Buyer smoke requires two distinct checkpoints:
+
+```bash
+export COEVO_PREVIOUS_POLICY_PATH=/path/to/S_k
+export COEVO_CURRENT_POLICY_CHECKPOINT=/path/to/S_k_plus_1
+export COEVO_POLICY_PATH=/path/to/S_k_plus_1
+```
+
+Start previous, current, Buyer, and rollout roles, run service preflight, then:
+
+```bash
+WANDB_MODE=offline ./scripts/train_buyer_smoke.sh \
+  artifacts/round_0000/data/buyer_grpo.jsonl \
+  artifacts/infra_smoke/buyer_adapter
+```
+
+The rollout must emit finite `previous_gaps`, `current_gaps`, raw LP,
+positive-LP reward, shared target hashes, and only Buyer-token response masks.
+
+## 9. Verification commands
+
+```bash
+pytest -q
+bash -n scripts/*.sh scripts/lib/*.sh
+git diff --check
+pytest -q tests/test_no_obsolete_objectives.py
+```
+
+The objective-regression test must pass. No test or smoke command may
+download a model. All Trainer entry points use W&B; set `WANDB_MODE=offline` when
+network access is not part of the test.

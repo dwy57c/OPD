@@ -79,7 +79,7 @@ def oracle_steps_from_task(task: Task) -> str:
 
 def format_teacher_query_with_hint(query: str, hint: dict[str, Any]) -> str:
     """Build the Teacher-only query used by OPSD's frozen policy API."""
-    hint_text = json.dumps(hint, ensure_ascii=False, indent=2)
+    hint_text = json.dumps(private_hint_payload(hint), ensure_ascii=False, indent=2)
     return (
         f"{query}\n\n"
         "<private_teacher_hint>\n"
@@ -87,6 +87,55 @@ def format_teacher_query_with_hint(query: str, hint: dict[str, Any]) -> str:
         "</private_teacher_hint>\n"
         "Use the private hint to answer the user while following the domain policy. "
         "Do not mention or expose the hint."
+    )
+
+
+def private_hint_payload(
+    value: "TeacherHintResult | dict[str, Any] | None",
+) -> dict[str, Any] | None:
+    """Return only the private plan, excluding audit metadata.
+
+    Collected rows store ``TeacherHintResult.to_dict()`` so model name, latency,
+    and hashes remain auditable.  Only the nested ``hint`` object is allowed into
+    the privileged Teacher prompt.
+    """
+    if value is None:
+        return None
+    if isinstance(value, TeacherHintResult):
+        return value.hint
+    if not isinstance(value, dict):
+        raise TypeError(f"teacher hint must be a mapping, got {type(value).__name__}")
+    if "hint" in value:
+        nested = value["hint"]
+        if nested is None:
+            return None
+        if not isinstance(nested, dict):
+            raise TypeError("teacher hint payload must be a mapping")
+        return nested
+    return value
+
+
+def format_teacher_system_prompt_with_hint(
+    system_prompt: str,
+    hint: "TeacherHintResult | dict[str, Any] | None",
+) -> str:
+    """Materialize the privileged information view without changing history.
+
+    A missing hint intentionally returns the ordinary prompt.  This makes a
+    no-hint row produce identical information views and therefore a closed token
+    gate instead of inventing supervision.
+    """
+    payload = private_hint_payload(hint)
+    if not payload:
+        return system_prompt
+    hint_text = json.dumps(payload, ensure_ascii=False, indent=2)
+    return (
+        f"{system_prompt}\n"
+        "<private_teacher_hint>\n"
+        f"{hint_text}\n"
+        "</private_teacher_hint>\n"
+        "Use this private plan throughout the current dialogue branch. "
+        "Follow the policy and visible dialogue, and never mention the hint."
     )
 
 
@@ -198,15 +247,7 @@ class HintedTeacherAgent(LLMAgent):
             domain_policy=self.domain_policy,
             agent_instruction=AGENT_INSTRUCTION,
         )
-        hint_text = json.dumps(result.hint, ensure_ascii=False, indent=2)
-        return (
-            f"{base_prompt}\n"
-            "<private_teacher_hint>\n"
-            f"{hint_text}\n"
-            "</private_teacher_hint>\n"
-            "Use this private plan throughout the current dialogue branch. "
-            "Follow the policy and visible dialogue, and never mention the hint."
-        )
+        return format_teacher_system_prompt_with_hint(base_prompt, result)
 
     def plan_for_session(
         self, history: list[APICompatibleMessage]

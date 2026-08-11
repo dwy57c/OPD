@@ -5,6 +5,8 @@ ARG COEVO_EXPECTED_SWIFT_VERSION=4.1.3
 ARG COEVO_TAU2_COMMIT=17e07b1da2bbc0cadfddeea36412686e0604127b
 WORKDIR /opt/coevo
 
+USER root
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends portaudio19-dev \
     && rm -rf /var/lib/apt/lists/*
@@ -18,6 +20,8 @@ RUN python -m pip install --no-cache-dir \
       --constraint /opt/coevo/constraints-container.txt \
       '/opt/tau2-bench[voice]' '/opt/coevo[dev]' \
     && test "$(python -c 'import swift; print(swift.__version__)')" = "$COEVO_EXPECTED_SWIFT_VERSION"
+
+USER research
 
 ENV TAU2_DATA_DIR=/opt/tau2-bench/data
 ENV COEVO_TAU2_REVISION=${COEVO_TAU2_COMMIT}

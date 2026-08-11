@@ -3,7 +3,11 @@ from tau2.run import get_tasks
 
 from coevo.config import HintEndpoint, InfraConfig, ModelEndpoint
 from coevo.models import hinted_teacher as hinted_module
-from coevo.models.hinted_teacher import HintedTeacherAgent, TeacherHintResult
+from coevo.models.hinted_teacher import (
+    HintedTeacherAgent,
+    TeacherHintResult,
+    format_teacher_system_prompt_with_hint,
+)
 
 
 class FakeHinter:
@@ -80,3 +84,23 @@ def test_teacher_is_shared_policy_with_private_hint_only(monkeypatch):
     assert "<resolution_steps>" not in system
     assert agent.hint_records[0]["latency_ms"] == 12
     assert len(hinter.payloads) == 1
+
+
+def test_privileged_prompt_excludes_hint_audit_metadata_and_null_hint():
+    prompt = format_teacher_system_prompt_with_hint(
+        "policy",
+        {
+            "hint": {"plan": "Ask for confirmation."},
+            "model": "audit-only-model",
+            "latency_ms": 12,
+            "sha256": "audit-only-hash",
+        },
+    )
+
+    assert "Ask for confirmation." in prompt
+    assert "audit-only-model" not in prompt
+    assert "latency_ms" not in prompt
+    assert "audit-only-hash" not in prompt
+    assert format_teacher_system_prompt_with_hint(
+        "policy", {"hint": None, "model": "audit-only-model"}
+    ) == "policy"

@@ -5,7 +5,11 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 source "$SCRIPT_DIR/lib/common.sh"
 
 ROLE=${1:?usage: stop_role.sh ROLE}
-PID_FILE=$COEVO_ROOT/runtime/pids/$ROLE.pid
+ROLE_KEY=$ROLE
+if [[ -n ${COEVO_ROLE_INSTANCE:-} ]]; then
+  ROLE_KEY="$ROLE-${COEVO_ROLE_INSTANCE}"
+fi
+PID_FILE=$COEVO_ROOT/runtime/pids/$ROLE_KEY.pid
 [[ -f "$PID_FILE" ]] || exit 0
 read -r PID EXPECTED_START_TICKS EXPECTED_PGID < "$PID_FILE"
 if kill -0 "$PID" 2>/dev/null; then

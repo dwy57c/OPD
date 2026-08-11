@@ -11,7 +11,7 @@ import socket
 import subprocess
 import sys
 from urllib.error import URLError
-from urllib.request import urlopen
+from urllib.request import ProxyHandler, build_opener
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -97,9 +97,25 @@ def check_python(checks: list[Check]) -> None:
         ),
         warn=sys.version_info[:2] == (3, 11),
     )
-    for module in ("requests", "torch", "openai", "tau2", "swift", "vllm", "trl"):
+    for module in (
+        "requests",
+        "torch",
+        "openai",
+        "tau2",
+        "swift",
+        "vllm",
+        "trl",
+        "wandb",
+    ):
         present = importlib.util.find_spec(module) is not None
         add(checks, f"import:{module}", present, "available" if present else "missing")
+    reporter = os.getenv("COEVO_REPORT_TO", "wandb")
+    add(
+        checks,
+        "experiment-reporter",
+        reporter == "wandb",
+        f"report_to={reporter} (required: wandb; SwanLab is disabled)",
+    )
     add(
         checks,
         "command:setsid",
@@ -217,6 +233,13 @@ def local_model(reference: str) -> bool:
     return reference.startswith("/") or reference.startswith(".")
 
 
+def stage_reward_needs_previous() -> bool:
+    return bool(
+        os.getenv("COEVO_PREVIOUS_POLICY_PATH")
+        or os.getenv("COEVO_PREVIOUS_POLICY_CHECKPOINT")
+    )
+
+
 def validate_local_model(reference: str) -> tuple[bool, str]:
     model_dir = Path(reference).expanduser()
     if not model_dir.is_dir():
@@ -258,26 +281,42 @@ def check_models(checks: list[Check]) -> None:
         "shared-policy-model": os.getenv("COEVO_POLICY_PATH", f"{model_root}/policy"),
         "buyer-model": os.getenv("COEVO_BUYER_PATH", f"{model_root}/policy"),
     }
+    if stage_reward_needs_previous():
+        models["previous-policy-model"] = os.getenv(
+            "COEVO_PREVIOUS_POLICY_PATH", ""
+        )
     for name, reference in models.items():
         if local_model(reference):
             valid, detail = validate_local_model(reference)
         else:
-            valid, detail = True, f"remote model id: {reference}"
+            downloads_allowed = os.getenv("COEVO_ALLOW_DOWNLOADS") == "1"
+            valid = bool(reference) and downloads_allowed
+            detail = (
+                f"remote model id: {reference}"
+                if valid
+                else "local model path required while downloads are disabled"
+            )
         add(checks, name, valid, detail)
 
 
 def ports() -> dict[str, int]:
-    return {
+    values = {
         "policy": int(os.getenv("COEVO_POLICY_PORT", "8000")),
         "buyer": int(os.getenv("COEVO_BUYER_PORT", "8002")),
         "rollout": int(os.getenv("COEVO_BUYER_ROLLOUT_PORT", "8003")),
     }
+    if stage_reward_needs_previous():
+        values["policy_previous"] = int(
+            os.getenv("COEVO_PREVIOUS_POLICY_PORT", "8001")
+        )
+    return values
 
 
 def check_free_ports(checks: list[Check]) -> None:
     for role, port in ports().items():
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock = None
         try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.bind(("127.0.0.1", port))
             free = True
         except OSError as error:
@@ -286,13 +325,14 @@ def check_free_ports(checks: list[Check]) -> None:
         else:
             detail = f"127.0.0.1:{port} is free"
         finally:
-            sock.close()
+            if sock is not None:
+                sock.close()
         add(checks, f"port:{role}", free, detail)
 
 
 def service_urls() -> dict[str, str]:
     role_ports = ports()
-    return {
+    values = {
         "policy": os.getenv(
             "COEVO_POLICY_URL", f"http://127.0.0.1:{role_ports['policy']}"
         ),
@@ -301,13 +341,25 @@ def service_urls() -> dict[str, str]:
         ),
         "rollout": f"http://127.0.0.1:{role_ports['rollout']}",
     }
+    if "policy_previous" in role_ports:
+        values["policy_previous"] = os.getenv(
+            "COEVO_PREVIOUS_POLICY_URL",
+            f"http://127.0.0.1:{role_ports['policy_previous']}",
+        )
+    return values
 
 
 def check_services(checks: list[Check]) -> None:
+    # Managed inference services are loopback-only.  Ignore inherited proxy
+    # variables here just as wait_for_servers.py does, otherwise a healthy local
+    # endpoint can be reported as unavailable through an unrelated proxy.
+    opener = build_opener(ProxyHandler({}))
     for role, base_url in service_urls().items():
-        url = base_url.rstrip("/") + ("/health/" if role == "rollout" else "/v1/models")
+        url = base_url.rstrip("/") + (
+            "/health/" if role == "rollout" else "/v1/models"
+        )
         try:
-            with urlopen(url, timeout=3) as response:
+            with opener.open(url, timeout=3) as response:
                 payload = json.load(response)
             detail = (
                 payload.get("status", "ready")
@@ -359,6 +411,10 @@ def check_gpus(checks: list[Check], require_all_free: bool) -> None:
             )
         ),
     }
+    if stage_reward_needs_previous():
+        service_gpu_sets["policy_previous"] = parse_gpu_ids(
+            os.getenv("COEVO_PREVIOUS_POLICY_GPUS", "4")
+        )
     policy_train = parse_gpu_ids(os.getenv("COEVO_POLICY_TRAIN_GPUS", "3"))
     buyer_train = parse_gpu_ids(os.getenv("COEVO_BUYER_TRAIN_GPUS", "3"))
     allocated = {}

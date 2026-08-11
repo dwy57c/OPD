@@ -31,7 +31,7 @@ TRAINER_ARGS=(
   --model_type "${COEVO_MODEL_TYPE:-qwen3}" \
   --template "${COEVO_TEMPLATE_TYPE:-qwen3_nothinking}" \
   --teacher_model_server "${COEVO_POLICY_URL:-http://127.0.0.1:${COEVO_POLICY_PORT:-8000}}" \
-  --gkd_logits_topk 20 \
+  --gkd_logits_topk "${COEVO_TEACHER_GAP_TOPK:-20}" \
   --use_logits_to_keep false \
   --external_plugins "$COEVO_ROOT/coevo/training/swift_plugin.py" \
   --dataset "$DATA" \
@@ -52,7 +52,8 @@ TRAINER_ARGS=(
   --logging_steps 1 \
   --save_steps "$STEPS" \
   --save_only_model true \
-  --report_to none \
+  --report_to "$COEVO_REPORT_TO" \
+  --run_name "${COEVO_WANDB_RUN_NAME:-student-round-${COEVO_ROUND_INDEX:-0}}" \
   --output_dir "$OUT"
 )
 

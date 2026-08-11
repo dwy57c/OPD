@@ -5,6 +5,8 @@ import argparse
 import json
 from pathlib import Path
 
+from coevo.artifacts import dataset_fingerprint, validate_compatible_artifacts
+
 
 JSONL_NAMES = ("trajectories.jsonl", "student_gkd.jsonl", "buyer_grpo.jsonl")
 
@@ -56,13 +58,16 @@ def unique_rows(rows: list[dict]) -> list[dict]:
 def normalize_chat_row(row: dict) -> dict:
     """Use Swift-compatible empty content for content-less tool calls."""
     normalized = dict(row)
-    normalized["messages"] = [
-        {
-            **message,
-            "content": "" if message.get("content") is None else message["content"],
-        }
-        for message in row["messages"]
-    ]
+    for field in ("messages",):
+        if field not in row:
+            continue
+        normalized[field] = [
+            {
+                **message,
+                "content": "" if message.get("content") is None else message["content"],
+            }
+            for message in row[field]
+        ]
     return normalized
 
 
@@ -73,13 +78,23 @@ def merge_shards(input_root: Path, output_dir: Path, require_complete: bool) -> 
 
     summaries = []
     merged = {name: [] for name in JSONL_NAMES}
+    contract_values = []
     for shard_dir in shard_dirs:
         summary_path = shard_dir / "summary.json"
         if not summary_path.is_file():
             raise FileNotFoundError(f"Missing {summary_path}")
-        summaries.append(json.loads(summary_path.read_text()))
+        summary = json.loads(summary_path.read_text())
+        summaries.append(summary)
+        contract_values.append((str(summary_path), summary))
         for name in JSONL_NAMES:
-            merged[name].extend(read_jsonl(shard_dir / name))
+            rows = read_jsonl(shard_dir / name)
+            merged[name].extend(rows)
+            contract_values.extend(
+                (f"{shard_dir / name}:{index}", row)
+                for index, row in enumerate(rows, start=1)
+            )
+
+    contract = validate_compatible_artifacts(contract_values)
 
     domain_values = {summary["domain"] for summary in summaries}
     split_values = {summary["task_split"] for summary in summaries}
@@ -122,6 +137,7 @@ def merge_shards(input_root: Path, output_dir: Path, require_complete: bool) -> 
         raise ValueError("Student rows contain tasks without completed trajectories")
 
     summary = {
+        **contract.to_dict(),
         "domain": next(iter(domain_values)),
         "task_split": next(iter(split_values)),
         "task_ids": expected_task_ids,
@@ -131,10 +147,15 @@ def merge_shards(input_root: Path, output_dir: Path, require_complete: bool) -> 
         "trajectories": len(trajectories),
         "student_decisions": len(student_rows),
         "buyer_rows": len(buyer_rows),
-        "decision_interventions": len(student_rows),
-        "intervention_advantages": [
-            float(row["intervention_advantage"]) for row in student_rows
+        "teacher_targets": len(student_rows),
+        "teacher_target_hashes": [
+            row["teacher_target_hash"] for row in student_rows
         ],
+        "dataset_fingerprint": dataset_fingerprint(
+            trajectories,
+            student_rows,
+            buyer_rows,
+        ),
         "errors": errors,
     }
     output_dir.mkdir(parents=True, exist_ok=True)

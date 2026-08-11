@@ -39,7 +39,7 @@ TRAINER_ARGS=(
   --external_plugins "$COEVO_ROOT/coevo/training/swift_plugin.py" \
   --dataset "$DATA" \
   --remove_unused_columns false \
-  --reward_funcs tau2_buyer_utility \
+  --reward_funcs tau2_stage_learning_progress \
   --tuner_type "$TUNER_TYPE" \
   --use_vllm true \
   --vllm_mode server \
@@ -51,7 +51,7 @@ TRAINER_ARGS=(
   --temperature 0.8 \
   --enable_thinking "${COEVO_BUYER_ENABLE_THINKING:-true}" \
   --beta "${COEVO_BUYER_BETA:-0.01}" \
-  --scale_rewards none \
+  --scale_rewards group \
   --torch_dtype bfloat16 \
   --max_steps "$STEPS" \
   --per_device_train_batch_size 1 \
@@ -62,7 +62,8 @@ TRAINER_ARGS=(
   --save_steps "${COEVO_BUYER_SAVE_STEPS:-$STEPS}" \
   --save_total_limit "${COEVO_BUYER_SAVE_TOTAL_LIMIT:-5}" \
   --save_only_model true \
-  --report_to none \
+  --report_to "$COEVO_REPORT_TO" \
+  --run_name "${COEVO_WANDB_RUN_NAME:-buyer-round-${COEVO_ROUND_INDEX:-0}}" \
   --output_dir "$OUT"
 )
 

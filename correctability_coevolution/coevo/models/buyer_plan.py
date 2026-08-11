@@ -43,7 +43,7 @@ _TOP_LEVEL_FIELDS = {
     "target_skill",
     "next_move",
     "payload",
-    "predicted_takeover_gain",
+    "predicted_learning_progress",
     "stop",
 }
 _DIAGNOSIS_FIELDS = {"failure_type", "evidence_turns"}
@@ -76,7 +76,7 @@ class BuyerPlan:
     target_skill: str
     next_move: str
     payload: dict[str, Any]
-    predicted_takeover_gain: float
+    predicted_learning_progress: float
     stop: bool
 
     @classmethod
@@ -143,9 +143,11 @@ class BuyerPlan:
         if forbidden:
             raise ValueError(f"Forbidden private-plan payload keys: {sorted(forbidden)}")
 
-        predicted_gain = value["predicted_takeover_gain"]
+        predicted_gain = value["predicted_learning_progress"]
         if type(predicted_gain) not in {int, float} or not 0 <= predicted_gain <= 1:
-            raise ValueError("predicted_takeover_gain must be a number in [0, 1]")
+            raise ValueError(
+                "predicted_learning_progress must be a number in [0, 1]"
+            )
         stop = value["stop"]
         if type(stop) is not bool:
             raise ValueError("stop must be a boolean")
@@ -157,7 +159,7 @@ class BuyerPlan:
             target_skill=target_skill.strip(),
             next_move=next_move,
             payload=deepcopy(action_payload),
-            predicted_takeover_gain=float(predicted_gain),
+            predicted_learning_progress=float(predicted_gain),
             stop=stop,
         )
 
@@ -167,7 +169,7 @@ class BuyerPlan:
             "target_skill": self.target_skill,
             "next_move": self.next_move,
             "payload": deepcopy(self.payload),
-            "predicted_takeover_gain": self.predicted_takeover_gain,
+            "predicted_learning_progress": self.predicted_learning_progress,
             "stop": self.stop,
         }
 
@@ -186,7 +188,7 @@ class BuyerPlan:
             "by a frozen renderer. Do not change the hidden scenario or invent facts.\n"
             "Required schema: {\"diagnosis\":{\"failure_type\":str,"
             "\"evidence_turns\":[int]},\"target_skill\":str,\"next_move\":str,"
-            "\"payload\":{},\"predicted_takeover_gain\":number,\"stop\":bool}.\n"
+            "\"payload\":{},\"predicted_learning_progress\":number,\"stop\":bool}.\n"
             f"Allowed next_move values: {actions}.\n"
             f"Allowed failure_type values: {failures}.\n"
             f"Available user tools: {tools}.\n"

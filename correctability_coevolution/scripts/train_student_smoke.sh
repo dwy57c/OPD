@@ -23,7 +23,7 @@ python -m swift.cli.rlhf \
   --model_type "${COEVO_MODEL_TYPE:-qwen3}" \
   --template "${COEVO_TEMPLATE_TYPE:-qwen3_nothinking}" \
   --teacher_model_server "${COEVO_POLICY_URL:-http://127.0.0.1:${COEVO_POLICY_PORT:-8000}}" \
-  --gkd_logits_topk 20 \
+  --gkd_logits_topk "${COEVO_TEACHER_GAP_TOPK:-20}" \
   --use_logits_to_keep false \
   --external_plugins "$COEVO_ROOT/coevo/training/swift_plugin.py" \
   --dataset "$DATA" \
@@ -32,7 +32,7 @@ python -m swift.cli.rlhf \
   --lora_rank 8 \
   --lora_alpha 16 \
   --target_modules all-linear \
-  --lmbda 1 \
+  --lmbda 0 \
   --beta 0.5 \
   --temperature 1.0 \
   --sft_alpha 0 \
@@ -47,5 +47,6 @@ python -m swift.cli.rlhf \
   --logging_steps 1 \
   --save_steps 1 \
   --save_only_model true \
-  --report_to none \
+  --report_to "$COEVO_REPORT_TO" \
+  --run_name "${COEVO_WANDB_RUN_NAME:-student-infra-smoke}" \
   --output_dir "$OUT"

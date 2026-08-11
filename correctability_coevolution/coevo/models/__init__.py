@@ -9,6 +9,8 @@ from .hinted_teacher import (
     ClosedModelTeacherHinter,
     HintedTeacherAgent,
     TeacherHintResult,
+    format_teacher_system_prompt_with_hint,
+    private_hint_payload,
 )
 from .tau2_factory import Tau2PolicyFactory
 
@@ -25,4 +27,6 @@ __all__ = [
     "Tau2PolicyFactory",
     "TeacherHintResult",
     "available_tool_names",
+    "format_teacher_system_prompt_with_hint",
+    "private_hint_payload",
 ]

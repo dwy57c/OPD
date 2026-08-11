@@ -1,6 +1,7 @@
 from coevo.config import InfraConfig, ModelEndpoint
 from coevo.environment import Tau2Environment
 from tau2.data_model.message import (
+    AssistantMessage,
     MultiToolMessage,
     ToolCall,
     ToolMessage,
@@ -74,6 +75,42 @@ def test_tau2_user_tool_call_runs_after_replaying_completed_history():
     assert result[:-1] == history
     assert isinstance(result[-1], ToolMessage)
     assert result[-1].requestor == "user"
+    assert result[-1].error is False
+
+
+def test_teacher_macro_tool_call_is_executed_before_student_handoff():
+    endpoint = ModelEndpoint("unused", "http://127.0.0.1:1")
+    environment = Tau2Environment(
+        InfraConfig(
+            policy=endpoint,
+            buyer_reference=endpoint,
+            teacher_hint_mode="none",
+            domain="airline",
+            task_split="train",
+            task_id="1",
+        )
+    )
+    history = [
+        *environment.initial_history(),
+        UserMessage(role="user", content="My user id is raj_sanchez_7340."),
+        AssistantMessage(
+            role="assistant",
+            tool_calls=[
+                ToolCall(
+                    id="teacher-user-lookup",
+                    name="get_user_details",
+                    arguments={"user_id": "raj_sanchez_7340"},
+                    requestor="assistant",
+                )
+            ],
+        ),
+    ]
+
+    result = environment.execute_pending_tools(history)
+
+    assert result[:-1] == history
+    assert isinstance(result[-1], ToolMessage)
+    assert result[-1].requestor == "assistant"
     assert result[-1].error is False
 
 

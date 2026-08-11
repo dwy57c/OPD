@@ -5,8 +5,8 @@ from coevo.models.buyer_plan import FAILURE_TYPES, BuyerPlan
 
 @dataclass(frozen=True)
 class BuyerPlanAuxRecord:
-    predicted_takeover_gain: float
-    observed_intervention_advantage: float
+    predicted_learning_progress: float
+    observed_learning_progress: float
     predicted_failure_type: str
     observed_failure_type: str
     target_skill: str
@@ -28,15 +28,15 @@ def huber_loss(prediction: float, target: float, delta: float = 1.0) -> float:
 def build_aux_record(
     plan: BuyerPlan,
     *,
-    observed_intervention_advantage: float,
+    observed_learning_progress: float,
     observed_failure_type: str,
     plan_action_consistent: bool,
 ) -> BuyerPlanAuxRecord:
     if observed_failure_type not in FAILURE_TYPES:
         raise ValueError(f"Unknown observed failure type: {observed_failure_type!r}")
     return BuyerPlanAuxRecord(
-        predicted_takeover_gain=plan.predicted_takeover_gain,
-        observed_intervention_advantage=observed_intervention_advantage,
+        predicted_learning_progress=plan.predicted_learning_progress,
+        observed_learning_progress=observed_learning_progress,
         predicted_failure_type=plan.diagnosis.failure_type,
         observed_failure_type=observed_failure_type,
         target_skill=plan.target_skill,

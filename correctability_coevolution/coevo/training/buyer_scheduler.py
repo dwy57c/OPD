@@ -6,58 +6,50 @@ from swift.infer_engine.protocol import RolloutOutput
 from swift.rollout.multi_turn import MultiTurnScheduler
 from tau2.data_model.message import AssistantMessage, ToolMessage
 
+from coevo.artifacts import canonical_hash
 from coevo.config import InfraConfig
 from coevo.environment import Tau2Environment
 from coevo.environment.tau2 import dump_messages, load_messages
 from coevo.intervention import DecisionState
-from coevo.models import BuyerPlan, BuyerRenderContext, FrozenRenderer
+from coevo.models import (
+    BuyerPlan,
+    BuyerRenderContext,
+    FrozenRenderer,
+    format_teacher_system_prompt_with_hint,
+)
 from coevo.rewards import transition_validity
-from coevo.rollout import build_action_branch_runner
+from coevo.rollout import build_teacher_target_labeler, student_view
+from coevo.scoring import StageGapScorer
 
 
 def visible_buyer_content(content: str | None) -> str:
-    """Remove Qwen-style private thinking before exposing a Buyer turn.
-
-    Swift normally returns thinking in ``reasoning_content`` and only the final
-    answer in ``content``. Some rollout backends instead return the serialized
-    ``<think>...</think>`` block in ``content``. Handle both representations so
-    private reasoning can remain in the sampled token sequence without entering
-    the tau2 history seen by Student, Teacher continuations, or scorers.
-
-    An unclosed thinking block is treated as private through end-of-string. This
-    deliberately produces an empty visible action when the model never reaches
-    its answer, allowing the existing validity gate to reject that rollout.
-    """
+    """Remove private Qwen thinking before exposing the public Buyer action."""
     if not content:
         return ""
-
-    lower_content = content.lower()
-    visible_parts = []
+    lowered = content.lower()
+    parts = []
     cursor = 0
     while True:
-        think_start = lower_content.find("<think>", cursor)
-        if think_start < 0:
-            visible_parts.append(content[cursor:])
+        start = lowered.find("<think>", cursor)
+        if start < 0:
+            parts.append(content[cursor:])
             break
-        visible_parts.append(content[cursor:think_start])
-        think_end = lower_content.find("</think>", think_start + len("<think>"))
-        if think_end < 0:
+        parts.append(content[cursor:start])
+        end = lowered.find("</think>", start + len("<think>"))
+        if end < 0:
             break
-        cursor = think_end + len("</think>")
-
-    # A few OpenAI-compatible backends omit the opening tag because the template
-    # supplied it as a generation prefix, but still return the closing tag.
-    visible = "".join(visible_parts)
+        cursor = end + len("</think>")
+    visible = "".join(parts)
     while True:
-        orphan_close = visible.lower().find("</think>")
-        if orphan_close < 0:
+        close = visible.lower().find("</think>")
+        if close < 0:
             break
-        visible = visible[:orphan_close] + visible[orphan_close + len("</think>") :]
+        visible = visible[:close] + visible[close + len("</think>") :]
     return visible.strip()
 
 
 class Tau2BuyerScheduler(MultiTurnScheduler):
-    """Run every Buyer action against the matching task environment before reward."""
+    """Run Buyer actions and reward only consecutive-checkpoint stage progress."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -65,6 +57,14 @@ class Tau2BuyerScheduler(MultiTurnScheduler):
         self.renderer = FrozenRenderer()
         self._contexts = {}
         self._contexts_lock = Lock()
+        self._stage_scorer = None
+
+    def _scorer(self) -> StageGapScorer:
+        if self._stage_scorer is None:
+            scorer = StageGapScorer(self.base_config)
+            scorer.validate_checkpoint_pair()
+            self._stage_scorer = scorer
+        return self._stage_scorer
 
     def _context(self, data: dict):
         domain = str(data.get("domain") or self.base_config.domain)
@@ -82,7 +82,10 @@ class Tau2BuyerScheduler(MultiTurnScheduler):
                         task_id=task_id,
                     )
                 )
-                context = (environment, build_action_branch_runner(environment))
+                context = (
+                    environment,
+                    build_teacher_target_labeler(environment),
+                )
                 self._contexts[key] = context
         return context
 
@@ -104,36 +107,63 @@ class Tau2BuyerScheduler(MultiTurnScheduler):
             ]
         messages.append(row)
 
-    @staticmethod
-    def _rollout_infos(data: dict) -> dict:
-        turn_scores = list(data.get("turn_intervention_advantages", []))
-        validity = float(data.get("trajectory_validity", 1.0))
-        mean_advantage = sum(turn_scores) / len(turn_scores) if turn_scores else 0.0
-        fast_reward = validity * mean_advantage
-        if "opd_utility_gain" in data:
-            raw_reward = float(data["opd_utility_gain"])
-            reward_source = str(data.get("opd_utility_source", "shadow_opd"))
-            reward = validity * raw_reward
-        else:
-            raw_reward = sum(turn_scores) / len(turn_scores) if turn_scores else 0.0
-            reward_source = "intervention_advantage"
-            reward = fast_reward
+    def _rollout_infos(self, data: dict) -> dict:
+        scoring_errors = list(data.get("scoring_errors", []))
+        validity = float(
+            float(data.get("trajectory_validity", 1.0)) > 0
+            and not scoring_errors
+        )
+        rows = list(data.get("stage_progress_decisions", []))
+        decision_rewards = [float(row["decision_reward"]) for row in rows]
+        raw_reward = (
+            sum(decision_rewards) / len(decision_rewards)
+            if decision_rewards
+            else 0.0
+        )
+
+        def values(field: str) -> list:
+            return [row[field] for row in rows if field in row]
+
+        def flattened(field: str) -> list[float]:
+            result = []
+            for value in values(field):
+                if isinstance(value, list):
+                    result.extend(float(item) for item in value)
+                else:
+                    result.append(float(value))
+            return result
+
         return {
-            "buyer_reward": reward,
-            "reward_source": reward_source,
-            "raw_reward": raw_reward,
-            "fast_intervention_reward": fast_reward,
-            "mean_intervention_advantage": mean_advantage,
-            "turn_intervention_advantages": turn_scores,
+            "buyer_reward": validity * raw_reward,
+            "reward_source": "stage_learning_progress",
+            "trajectory_validity": validity,
             "validity": validity,
             "decision_count": int(data.get("decision_count", 0)),
             "plan_errors": list(data.get("buyer_plan_errors", [])),
+            "previous_gaps": flattened("previous_gap"),
+            "current_gaps": flattened("current_gap"),
+            "learning_progresses": flattened("learning_progress"),
+            "positive_learning_progresses": flattened(
+                "positive_learning_progress"
+            ),
+            "decision_rewards": decision_rewards,
+            "checkpoint_previous": self.base_config.previous_policy_checkpoint,
+            "checkpoint_current": self.base_config.current_policy_checkpoint,
+            "teacher_target_hashes": values("teacher_target_hash"),
+            "raw_teacher_target_hashes": values("raw_teacher_target_hash"),
+            "skill_contrast_scores": flattened("skill_contrast_scores"),
+            "skill_gate_values": flattened("skill_gate_values"),
+            "sharpening_temperatures": flattened("sharpening_temperatures"),
+            "raw_teacher_entropies": flattened("raw_teacher_entropy"),
+            "sharpened_teacher_entropies": flattened(
+                "sharpened_teacher_entropy"
+            ),
+            "scoring_errors": scoring_errors,
         }
 
     def _mark_truncated(self, infer_request) -> dict:
-        data = infer_request.data_dict
-        data["trajectory_validity"] = 0.0
-        return self._rollout_infos(data)
+        infer_request.data_dict["trajectory_validity"] = 0.0
+        return self._rollout_infos(infer_request.data_dict)
 
     def _decode_buyer_action(self, environment, response_choice, data: dict):
         content = visible_buyer_content(response_choice.message.content)
@@ -172,20 +202,40 @@ class Tau2BuyerScheduler(MultiTurnScheduler):
             {"type": type(error).__name__, "message": str(error)}
         )
 
+    def _score_decision(self, environment, label) -> dict:
+        result = label.to_dict()
+        history_before = load_messages(result["history_before"])
+        teacher_action = AssistantMessage.model_validate(result["teacher_action"])
+        student = environment.policies.student(environment.fresh_environment())
+        visible_messages = student_view(
+            student.system_prompt, [*history_before, teacher_action]
+        )
+        hinted_messages = student_view(
+            format_teacher_system_prompt_with_hint(
+                student.system_prompt, result.get("teacher_hint")
+            ),
+            [*history_before, teacher_action],
+        )
+        score = self._scorer().score(
+            student_visible_messages=visible_messages,
+            hinted_teacher_messages=hinted_messages,
+            teacher_action=visible_messages[-1],
+            state_hash=str(result["state_hash"]),
+            teacher_hint_hash=canonical_hash(result.get("teacher_hint") or {}),
+        )
+        return score.to_dict()
+
     def _apply_buyer_action(
         self, infer_request, response_choice, append_observation: bool
     ) -> tuple[dict, bool]:
         data = infer_request.data_dict
         if "tau_history" not in data:
             raise KeyError(
-                "tau_history is missing; start the rollout scheduler on the server and "
-                "train with --vllm_server_pass_dataset true"
+                "tau_history is missing; train with --vllm_server_pass_dataset true"
             )
-
-        environment, branch_runner = self._context(data)
+        environment, labeler = self._context(data)
         history = load_messages(data["tau_history"])
-        turn_scores = list(data.get("turn_intervention_advantages", []))
-        validity_score = float(data.get("trajectory_validity", 1.0))
+        validity = float(data.get("trajectory_validity", 1.0))
         try:
             buyer_message = self._decode_buyer_action(
                 environment, response_choice, data
@@ -195,9 +245,9 @@ class Tau2BuyerScheduler(MultiTurnScheduler):
             return self._rollout_infos(data), True
         history.append(buyer_message)
 
-        decision_count = 0
+        new_decisions = 0
         if not buyer_message.is_tool_call() and not buyer_message.content:
-            validity_score = 0.0
+            validity = 0.0
             finished = True
         else:
             finished = environment.buyer_stopped(buyer_message)
@@ -205,7 +255,7 @@ class Tau2BuyerScheduler(MultiTurnScheduler):
             transition_start = len(history)
             history = environment.execute_user_tools(history)
             transition = history[transition_start:]
-            validity_score *= transition_validity(transition)
+            validity *= transition_validity(transition)
             if append_observation:
                 for observation in transition:
                     if isinstance(observation, ToolMessage):
@@ -219,48 +269,55 @@ class Tau2BuyerScheduler(MultiTurnScheduler):
         elif not finished:
             transition_start = len(history)
             history = environment.advance_student(history)
-            # Student errors are learning targets, not Buyer invalidity. Only a
-            # Buyer-issued user tool transition is validity-gated above.
-            all_decision_indexes = [
+            all_indexes = [
                 index
                 for index in range(transition_start, len(history))
                 if isinstance(history[index], AssistantMessage)
                 and (history[index].content or history[index].tool_calls)
             ]
-            if not all_decision_indexes:
-                validity_score = 0.0
+            if not all_indexes:
+                validity = 0.0
                 finished = True
             else:
-                decision_indexes = all_decision_indexes
-                max_decisions = self.base_config.max_intervention_decisions
-                if max_decisions:
-                    decision_indexes = decision_indexes[:max_decisions]
-                for message_index in decision_indexes:
-                    result = branch_runner.run(
-                        DecisionState.from_history(history, message_index)
-                    )
-                    result_row = result.to_dict()
-                    advantage = float(result_row["intervention_advantage"])
-                    turn_scores.append(advantage)
-                    data.setdefault("interventions", []).append(result_row)
-                    decision_count += 1
+                indexes = all_indexes
+                if self.base_config.max_teacher_targets:
+                    indexes = indexes[: self.base_config.max_teacher_targets]
+                for message_index in indexes:
+                    new_decisions += 1
+                    try:
+                        label = labeler.run(
+                            DecisionState.from_history(history, message_index)
+                        )
+                        scored = self._score_decision(environment, label)
+                    except Exception as error:
+                        validity = 0.0
+                        data.setdefault("scoring_errors", []).append(
+                            {
+                                "message_index": message_index,
+                                "type": type(error).__name__,
+                                "message": str(error),
+                            }
+                        )
+                    else:
+                        data.setdefault("stage_progress_decisions", []).append(scored)
+                        data.setdefault("teacher_target_labels", []).append(
+                            label.to_dict()
+                        )
                 if append_observation:
-                    message_index = all_decision_indexes[-1]
+                    last = history[all_indexes[-1]]
                     infer_request.messages.append(
-                        {"role": "user", "content": history[message_index].content}
+                        {"role": "user", "content": last.content or ""}
                     )
 
         data["tau_history"] = dump_messages(history)
-        data["turn_intervention_advantages"] = turn_scores
-        data["trajectory_validity"] = validity_score
-        data["decision_count"] = int(data.get("decision_count", 0)) + decision_count
+        data["trajectory_validity"] = validity
+        data["decision_count"] = int(data.get("decision_count", 0)) + new_decisions
         return self._rollout_infos(data), finished
 
     async def run(self, infer_request, request_config, **kwargs):
         """Execute and score all generated Buyer actions, including the final one."""
         if not self.max_turns or self.max_turns < 1:
-            raise ValueError("tau2_buyer requires --max_turns >= 1 on swift rollout")
-
+            raise ValueError("tau2_buyer requires --max_turns >= 1")
         response_token_ids = []
         response_loss_mask = []
         rollout_logprobs = []
@@ -269,38 +326,33 @@ class Tau2BuyerScheduler(MultiTurnScheduler):
         response = None
         turns_executed = 0
         rollout_finished = False
-
         for current_turn in range(1, self.max_turns + 1):
             response = await self.infer_engine.infer_async(
                 infer_request, request_config, **kwargs
             )
-            response_choice = response.choices[0]
-            token_ids = list(response_choice.token_ids or [])
+            choice = response.choices[0]
+            token_ids = list(choice.token_ids or [])
             response_token_ids.append(token_ids)
             response_loss_mask.append([1] * len(token_ids))
-            logprobs = self._extract_logprobs_from_choice(response_choice)
+            logprobs = self._extract_logprobs_from_choice(choice)
             if len(logprobs) == len(token_ids):
                 rollout_logprobs.append(logprobs)
             else:
                 complete_logprobs = False
-
-            self._append_buyer_response(infer_request.messages, response_choice)
+            self._append_buyer_response(infer_request.messages, choice)
             turns_executed = current_turn
-            if response_choice.finish_reason == "length":
+            if choice.finish_reason == "length":
                 rollout_infos = self._mark_truncated(infer_request)
                 break
-
-            append_observation = current_turn < self.max_turns
             rollout_infos, finished = await asyncio.to_thread(
                 self._apply_buyer_action,
                 infer_request,
-                response_choice,
-                append_observation,
+                choice,
+                current_turn < self.max_turns,
             )
             if finished:
                 rollout_finished = True
                 break
-
         if response is None:
             raise RuntimeError("Buyer rollout produced no response")
         if not rollout_finished:

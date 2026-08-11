@@ -84,8 +84,9 @@ def extract_decision_states(
         message = history[index]
         if not isinstance(message, AssistantMessage):
             continue
-        if not message.content and not message.tool_calls:
-            continue
+        # An AssistantMessage is a protocol decision.  Do not silently erase a
+        # malformed empty or mixed decision from audit/collection; the caller
+        # must see the same fail-closed validation as direct construction.
         decisions.append(DecisionState.from_history(history, index))
         if limit and len(decisions) >= limit:
             break

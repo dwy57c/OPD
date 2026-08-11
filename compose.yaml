@@ -5,7 +5,7 @@ services:
       args:
         COEVO_BASE_IMAGE: ${COEVO_BASE_IMAGE:-meinian-megatron-grpo:swift4.1.3-vllm0.19.1-trl0.29.1-mcore1.3.2@sha256:8c0641fd72cf18cc32ba439ed7a1fadf3fe6d5bf54cc42929c677d7cd63f4163}
     image: ${COEVO_RUNTIME_IMAGE:-coevo-swift:4.1.3}
-    container_name: swift-grpo-dev
+    container_name: ${COEVO_CONTAINER_NAME:-opd-coevo-dev}
     working_dir: /workspace/OPD/correctability_coevolution
     command: sleep infinity
     network_mode: host

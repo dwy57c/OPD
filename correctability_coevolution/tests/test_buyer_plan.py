@@ -12,7 +12,7 @@ def plan(**overrides):
         "target_skill": "confirmation",
         "next_move": "ask_about_policy",
         "payload": {},
-        "predicted_takeover_gain": 0.5,
+        "predicted_learning_progress": 0.5,
         "stop": False,
     }
     value.update(overrides)

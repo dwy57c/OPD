@@ -12,6 +12,13 @@ import time
 
 from tau2.run import get_tasks
 
+from coevo.artifacts import (
+    SCHEMA_VERSION,
+    dataset_fingerprint,
+    validate_compatible_artifacts,
+)
+from coevo.rewards import REWARD_FORMULA_VERSION, REWARD_NAME
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DOMAINS = ("airline", "retail", "telecom")
@@ -28,7 +35,9 @@ class CollectionJob:
 
 def write_json(path: Path, value: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n")
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n")
+    temporary.replace(path)
 
 
 def run_logged(command: list[str], env: dict[str, str], log_path: Path) -> None:
@@ -78,6 +87,7 @@ def merge_collection(output_dir: Path, jobs: list[CollectionJob]) -> dict:
     student_rows = []
     buyer_rows = []
     errors = []
+    contract_values = []
     for job in sorted(jobs, key=lambda item: (DOMAINS.index(item.domain), item.shard_index)):
         records.extend(read_jsonl(job.output_dir / "trajectories.jsonl"))
         student_rows.extend(read_jsonl(job.output_dir / "student_gkd.jsonl"))
@@ -85,10 +95,21 @@ def merge_collection(output_dir: Path, jobs: list[CollectionJob]) -> dict:
         summary_path = job.output_dir / "summary.json"
         if summary_path.is_file():
             summary = json.loads(summary_path.read_text())
+            contract_values.append((str(summary_path), summary))
             errors.extend(
                 {"domain": job.domain, **error}
                 for error in summary.get("errors", [])
             )
+    for filename, rows in (
+        ("trajectories.jsonl", records),
+        ("student_gkd.jsonl", student_rows),
+        ("buyer_grpo.jsonl", buyer_rows),
+    ):
+        contract_values.extend(
+            (f"{filename}:{index}", row)
+            for index, row in enumerate(rows, start=1)
+        )
+    contract = validate_compatible_artifacts(contract_values)
 
     expected = {
         (domain, str(task.id))
@@ -118,6 +139,7 @@ def merge_collection(output_dir: Path, jobs: list[CollectionJob]) -> dict:
             "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows)
         )
     summary = {
+        **contract.to_dict(),
         "expected_tasks": len(expected),
         "trajectories": len(records),
         "student_rows": len(student_rows),
@@ -126,6 +148,11 @@ def merge_collection(output_dir: Path, jobs: list[CollectionJob]) -> dict:
             domain: sum(row["domain"] == domain for row in records)
             for domain in DOMAINS
         },
+        "dataset_fingerprint": dataset_fingerprint(
+            records,
+            student_rows,
+            buyer_rows,
+        ),
     }
     write_json(merged_dir / "summary.json", summary)
     return summary
@@ -158,11 +185,18 @@ def main() -> None:
         or args.collection_passes < 1
     ):
         parser.error("shard and worker counts must be positive")
+    if args.skip_policy_training and not args.skip_buyer_training:
+        parser.error("Buyer stage training requires the preceding Student update")
 
     output_dir = args.output_dir.expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = output_dir / "manifest.json"
     manifest = {
+        "schema_version": SCHEMA_VERSION,
+        "target_schema_version": 2,
+        "reward_name": REWARD_NAME,
+        "reward_formula_version": REWARD_FORMULA_VERSION,
+        "reward_scaling": "group",
         "status": "running",
         "phase": "collection",
         "domains": list(DOMAINS),
@@ -173,6 +207,14 @@ def main() -> None:
     }
     write_json(manifest_path, manifest)
     env = dict(os.environ)
+    initial_policy = env.get("COEVO_POLICY_PATH", "/models/policy")
+    initial_buyer = env.get("COEVO_BUYER_PATH", initial_policy)
+    env.update(
+        COEVO_CURRENT_POLICY_CHECKPOINT=initial_policy,
+        COEVO_PREVIOUS_POLICY_CHECKPOINT="",
+        COEVO_BUYER_CHECKPOINT=initial_buyer,
+        COEVO_ROUND_INDEX="0",
+    )
     jobs = [
         CollectionJob(
             domain=domain,
@@ -262,9 +304,23 @@ def main() -> None:
                 output_dir / "logs/policy_training.log",
             )
             policy_checkpoint = latest_checkpoint(output_dir / "policy")
+            if str(policy_checkpoint) == str(initial_policy):
+                raise ValueError("previous and current policy checkpoints are identical")
             manifest["policy_checkpoint"] = str(policy_checkpoint)
             manifest["phase"] = "policy_refresh"
             write_json(manifest_path, manifest)
+            env = dict(
+                env,
+                COEVO_PREVIOUS_POLICY_PATH=initial_policy,
+                COEVO_PREVIOUS_POLICY_CHECKPOINT=initial_policy,
+                COEVO_CURRENT_POLICY_CHECKPOINT=str(policy_checkpoint),
+            )
+            subprocess.run(
+                ["bash", "scripts/start_role.sh", "policy_previous", initial_policy],
+                cwd=ROOT,
+                env=env,
+                check=True,
+            )
             subprocess.run(
                 ["bash", "scripts/stop_role.sh", "policy"],
                 cwd=ROOT,
@@ -273,6 +329,24 @@ def main() -> None:
             )
             subprocess.run(
                 ["bash", "scripts/start_role.sh", "policy", str(policy_checkpoint)],
+                cwd=ROOT,
+                env=env,
+                check=True,
+            )
+            subprocess.run(
+                ["bash", "scripts/stop_role.sh", "rollout"],
+                cwd=ROOT,
+                env=env,
+                check=True,
+            )
+            subprocess.run(
+                ["bash", "scripts/start_role.sh", "rollout", initial_buyer],
+                cwd=ROOT,
+                env=env,
+                check=True,
+            )
+            subprocess.run(
+                [sys.executable, "scripts/preflight.py", "services"],
                 cwd=ROOT,
                 env=env,
                 check=True,

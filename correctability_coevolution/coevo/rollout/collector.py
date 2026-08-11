@@ -1,26 +1,97 @@
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 import os
 
 from tau2.data_model.message import AssistantMessage
 
+from coevo.artifacts import artifact_metadata, canonical_hash
 from coevo.environment import Tau2Environment
-from coevo.environment.tau2 import dump_messages
-from coevo.intervention import ActionBranchRunner
+from coevo.environment.tau2 import dump_messages, load_messages
+from coevo.models import format_teacher_system_prompt_with_hint
 from coevo.rollout.views import buyer_view, student_view
+from coevo.scoring import (
+    TeacherTargetBuilder,
+    TeacherTargetLabeler,
+    TeacherTargetRecord,
+)
 
 
 class NaturalDecisionCollector:
-    """Collect a trunk and branch at every complete natural Student action."""
+    """Collect one canonical Teacher target at each complete Student action."""
 
     def __init__(
         self,
         environment: Tau2Environment,
-        scorer: ActionBranchRunner,
+        labeler: TeacherTargetLabeler,
         max_decisions: int,
+        *,
+        target_builder: TeacherTargetBuilder | None = None,
     ):
         self.environment = environment
-        self.scorer = scorer
+        self.labeler = labeler
         self.max_decisions = max_decisions
+        self._student_system_prompt = None
+        self._target_builder = target_builder
+
+    def _builder(self) -> TeacherTargetBuilder:
+        if self._target_builder is None:
+            self._target_builder = TeacherTargetBuilder(self.environment.config)
+        return self._target_builder
+
+    def _system_prompt(self) -> str:
+        if self._student_system_prompt is None:
+            student = self.environment.policies.student(
+                self.environment.fresh_environment()
+            )
+            self._student_system_prompt = student.system_prompt
+        return self._student_system_prompt
+
+    def _materialize_target(self, decision: dict) -> dict:
+        candidate = dict(decision)
+        history_before = load_messages(candidate["history_before"])
+        teacher_action = AssistantMessage.model_validate(candidate["teacher_action"])
+        visible_messages = student_view(
+            self._system_prompt(), [*history_before, teacher_action]
+        )
+        hinted_messages = student_view(
+            format_teacher_system_prompt_with_hint(
+                self._system_prompt(), candidate.get("teacher_hint")
+            ),
+            [*history_before, teacher_action],
+        )
+        hint_hash = canonical_hash(candidate.get("teacher_hint") or {})
+        try:
+            target = self._builder().build(
+                student_visible_messages=visible_messages,
+                hinted_teacher_messages=hinted_messages,
+                teacher_action=visible_messages[-1],
+                state_hash=str(candidate["state_hash"]),
+                teacher_hint_hash=hint_hash,
+            )
+        except Exception as error:
+            candidate.update(
+                {
+                    "student_eligible": False,
+                    "student_rejection_reason": (
+                        f"{type(error).__name__}: {error}"
+                    ),
+                    "teacher_hint_hash": hint_hash,
+                }
+            )
+            return candidate
+        candidate.update(
+            {
+                "student_eligible": True,
+                "student_rejection_reason": None,
+                "teacher_hint_hash": hint_hash,
+                "teacher_target_record": target.to_dict(),
+                "raw_teacher_target_hash": target.raw_teacher_target_hash,
+                "teacher_target_hash": target.teacher_target_hash,
+                "teacher_action_hash": target.teacher_action_hash,
+                "target_token_count": sum(target.target_loss_mask),
+            }
+        )
+        return candidate
 
     def collect_one(self, seed: int | None = None) -> dict:
         env = self.environment
@@ -38,81 +109,61 @@ class NaturalDecisionCollector:
 
         trunk = orchestrator.get_trajectory()
         message_indexes = [
-            message_index
-            for message_index in range(initial_size, len(trunk))
-            if isinstance(trunk[message_index], AssistantMessage)
+            index
+            for index in range(initial_size, len(trunk))
+            if isinstance(trunk[index], AssistantMessage)
         ]
         score_workers = int(os.getenv("COEVO_TURN_SCORE_WORKERS", "1"))
         if score_workers > 1 and self.max_decisions == 0:
-            # Every continuation constructs a fresh tau2 environment. Scoring
-            # independent completed turns concurrently therefore preserves rollout
-            # semantics while allowing vLLM to batch Buyer and policy requests.
             with ThreadPoolExecutor(max_workers=score_workers) as executor:
-                scored_decisions = list(
+                scored = list(
                     executor.map(
-                        lambda index: self.scorer.score_decision(trunk, index),
+                        lambda index: self.labeler.score_decision(trunk, index),
                         message_indexes,
                     )
                 )
-            student_decisions = [
-                decision for decision in scored_decisions if decision is not None
-            ]
+            decisions = [self._materialize_target(value) for value in scored]
         else:
-            student_decisions = []
+            decisions = []
             for message_index in message_indexes:
-                scored = self.scorer.score_decision(trunk, message_index)
-                if scored is not None:
-                    student_decisions.append(scored)
-                if (
-                    self.max_decisions > 0
-                    and len(student_decisions) >= self.max_decisions
-                ):
+                decisions.append(
+                    self._materialize_target(
+                        self.labeler.score_decision(trunk, message_index)
+                    )
+                )
+                if self.max_decisions and len(decisions) >= self.max_decisions:
                     break
         return {
+            **artifact_metadata(env.config),
             "domain": env.config.domain,
             "task_split": env.config.task_split,
             "task_id": env.task.id,
             "seed": trajectory_seed,
             "trunk": dump_messages(trunk),
-            "student_decisions": student_decisions,
+            "student_decisions": decisions,
+            "teacher_target_cache": self._builder().cache_stats,
         }
 
     def student_rows(self, record: dict) -> list[dict]:
-        env = self.environment
-        raw_environment = env.fresh_environment()
-        student = env.policies.student(raw_environment)
         rows = []
         for turn in record["student_decisions"]:
-            from coevo.environment.tau2 import load_messages
-
-            history_before = load_messages(turn["history_before"])
-            advantage = float(turn["intervention_advantage"])
-            if advantage <= 0:
+            if not turn.get("student_eligible"):
                 continue
-            teacher_action = AssistantMessage.model_validate(turn["teacher_action"])
-            student_action = AssistantMessage.model_validate(turn["student_action"])
-            repaired_messages = student_view(
-                student.system_prompt,
-                [*history_before, teacher_action],
-            )
-            original_messages = student_view(
-                student.system_prompt,
-                [*history_before, student_action],
-            )
+            target = TeacherTargetRecord.from_dict(turn["teacher_target_record"])
             rows.append(
                 {
-                    "messages": repaired_messages,
-                    "original_branch_messages": original_messages,
-                    "training_target": "repair_then_distill",
-                    "intervention_advantage": advantage,
-                    "student_value": turn["student_value"],
-                    "teacher_value": turn["teacher_value"],
-                    "state_hash": turn["state_hash"],
-                    "sample_hash": turn["sample_hash"],
-                    "teacher_hint": turn.get("teacher_hint"),
-                    "domain": env.config.domain,
-                    "task_split": env.config.task_split,
-                    "task_id": env.task.id,
+                    **artifact_metadata(self.environment.config),
+                    "messages": deepcopy_messages(target.student_visible_messages),
+                    "training_target": "skill_contrast_teacher_distill",
+                    "teacher_target_record": target.to_dict(),
+                    "state_hash": target.state_hash,
+                    "teacher_action_hash": target.teacher_action_hash,
+                    "raw_teacher_target_hash": target.raw_teacher_target_hash,
+                    "teacher_target_hash": target.teacher_target_hash,
+                    "target_token_count": sum(target.target_loss_mask),
+                    "domain": self.environment.config.domain,
+                    "task_split": self.environment.config.task_split,
+                    "task_id": self.environment.task.id,
                 }
             )
         return rows
@@ -129,6 +180,7 @@ class NaturalDecisionCollector:
             )
         history = env.initial_history()
         row = {
+            **artifact_metadata(env.config),
             "messages": buyer_view(system_prompt, history),
             "domain": env.config.domain,
             "task_split": env.config.task_split,
@@ -139,3 +191,7 @@ class NaturalDecisionCollector:
         if buyer.tools and env.config.buyer_plan_mode == "legacy":
             row["tools"] = [tool.openai_schema for tool in buyer.tools]
         return row
+
+
+def deepcopy_messages(messages) -> list[dict]:
+    return deepcopy(list(messages))
