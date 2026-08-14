@@ -10,9 +10,10 @@ optimization.
 The central mechanism is:
 
 > The privileged skill defines a skill-contrast-gated sharpened Teacher target.
-> Consecutive Student checkpoints define stage learning progress relative to
-> that same target. GRPO trains the environment to generate the next round's
-> data in regions with positive recent progress.
+> The pre-update checkpoint `S_k+skill` defines that target once. Consecutive
+> unprivileged Students `S_k` and `S_(k+1)` define stage learning progress
+> relative to the fixed target. GRPO trains the environment to generate the
+> next round's data in regions with positive recent progress.
 
 This is a moving-distribution signal. Positive stage progress does not claim
 that an individual newly generated example caused the checkpoint improvement.
@@ -20,7 +21,8 @@ that an individual newly generated example caused the checkpoint improvement.
 ## Research contract
 
 For a complete Student-visible state `s` and one complete privileged Teacher
-action `a_T`, the current checkpoint `S_k` scores the same target tokens twice:
+action `a_T`, the frozen pre-update checkpoint `S_k` scores the same target
+tokens twice:
 
 ```text
 q_h = p(S_k | s, private skill, a_T prefix)
@@ -78,9 +80,12 @@ Round k starts with Student S_k and Buyer B_k
 1. B_k and S_k collect Teacher-supervised data D_k.
 2. Train Student on D_k: S_k -> S_(k+1).
 3. Serve previous=S_k and current=S_(k+1) simultaneously.
-4. Train Buyer online with stage learning progress on newly generated examples.
-5. Update B_k -> B_(k+1).
-6. The next round collects with S_(k+1), B_(k+1).
+4. Let current `S_(k+1)` generate Buyer-rollout states, but use frozen
+   `S_k+skill` to generate each Teacher demonstration and target.
+5. Train Buyer online with progress from unhinted `S_k` to `S_(k+1)` against
+   that fixed `S_k+skill` target.
+6. Update B_k -> B_(k+1).
+7. The next round collects with S_(k+1), B_(k+1).
 ```
 
 Student and Buyer never change in the same optimizer step. The pre-update
@@ -134,14 +139,14 @@ Default service topology during Buyer training:
 
 | Role | Port | Meaning |
 |---|---:|---|
-| `policy` | 8000 | current Student and current self-Teacher checkpoint |
-| `policy_previous` | 8001 | frozen pre-update Student checkpoint |
+| `policy` | 8000 | current unprivileged Student `S_(k+1)` |
+| `policy_previous` | 8001 | frozen `S_k`, used both unprivileged and as `S_k+skill` Teacher anchor |
 | `buyer` | 8002 | Buyer reference endpoint |
 | `rollout` | 8003 | Swift online Buyer rollout server |
 
 The controller rejects a missing or accidentally identical checkpoint pair.
-Previous/current prompt-logprob failures are surfaced and never replaced by a
-single-checkpoint proxy.
+Teacher-anchor/current prompt-logprob failures are surfaced and never replaced
+by a moving `S_(k+1)+skill` target or single-checkpoint proxy.
 
 ## Local-only execution
 

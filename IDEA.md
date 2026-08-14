@@ -89,7 +89,7 @@ new = S_(k+1)
 
 - \(s\)：完整 assistant action 产生前的 Student-visible state；
 - \(a_S\)：真实 session 中 current Student 产生的完整 action；
-- \(a_T\)：在相同 \(s\) 上，current checkpoint 带 private skill 生成的完整 Teacher action；
+- \(a_T\)：在相同 \(s\) 上，冻结的 Teacher-anchor checkpoint 带 private skill 生成的完整 Teacher action；collection 时 anchor 是 \(S_k\)，Student 更新后的 Buyer 阶段仍固定为 \(S_k\)；
 - \(y_1,\ldots,y_L\)：\(a_T\) 的 target token 序列。
 
 完整 action 可以是：
@@ -117,7 +117,7 @@ Teacher 的 assistant policy 不是独立的固定大模型，而是：
 \[
 \text{Teacher policy}
 =
-\text{当前 Student checkpoint}
+\text{本阶段冻结的 Teacher-anchor checkpoint}
 +
 \text{private skill}.
 \]
@@ -130,7 +130,7 @@ Teacher 的 assistant policy 不是独立的固定大模型，而是：
 - 面对相同公开状态；
 - 只在 private hint 上不同。
 
-系统可以使用一个独立 hinter 根据 oracle resolution steps、domain policy 和当前历史生成 private hint。但 hinter 只生成私有计划，真正输出 Teacher assistant action 的仍然是当前 Student checkpoint。
+系统可以使用一个独立 hinter 根据 oracle resolution steps、domain policy 和当前历史生成 private hint。但 hinter 只生成私有计划，真正输出 Teacher assistant action 的仍然是本阶段的 Student checkpoint。collection 阶段是 \(S_k\)；完成 \(S_k\to S_{k+1}\) 后训练 Buyer 时仍锚定 \(S_k+\text{skill}\)，不会改成 \(S_{k+1}+\text{skill}\)。
 
 ### 3.3 Buyer
 
@@ -180,10 +180,11 @@ Round k starts with Student S_k and Buyer B_k
        previous = S_k
        current  = S_(k+1)
 4. Buyer B_k 与 current Student S_(k+1) 生成新的 GRPO sessions
-5. 在这些新 session 的自然决策状态上计算 stage learning progress
-6. 用 group GRPO 更新 Buyer：
+5. 在每个自然决策状态上，由冻结的 previous S_k+skill 生成示范与 target
+6. 比较无 skill 的 S_k 与 S_(k+1) 对同一 target 的 gap
+7. 用 group GRPO 更新 Buyer：
        B_k -> B_(k+1)
-7. 下一轮使用：
+8. 下一轮使用：
        B_(k+1) + S_(k+1)
    收集新的 Student 蒸馏数据
 ~~~
@@ -427,7 +428,7 @@ previous Student \(S_k\) 不参与自由 rollout，不生成另一条 session。
 对 current Student session 中的每个自然决策状态 \(s\)，系统额外调用：
 
 \[
-S_{k+1}+\text{skill}
+S_k+\text{skill}
 \]
 
 生成一个完整 Teacher action \(a_T\)。
@@ -456,22 +457,22 @@ S_{k+1}+\text{skill}
 
 ## 9. Buyer learning-progress reward
 
-### 9.1 Current-anchored Teacher target
+### 9.1 Previous-skill-anchored Teacher target
 
 Buyer reward 阶段的 Teacher target 来自：
 
 \[
-S_{k+1}+\text{skill}.
+S_k+\text{skill}.
 \]
 
-先用 current checkpoint 的两个信息视图构造一次：
+先用 previous checkpoint 的两个信息视图构造一次：
 
 \[
-q_h=p_{S_{k+1}}(\cdot\mid s,h),
+q_h=p_{S_k}(\cdot\mid s,h),
 \]
 
 \[
-p_0=p_{S_{k+1}}(\cdot\mid s),
+p_0=p_{S_k}(\cdot\mid s),
 \]
 
 \[
@@ -482,7 +483,8 @@ p_0=p_{S_{k+1}}(\cdot\mid s),
 
 这个 \(\widetilde q_h\) 随后完全冻结。
 
-previous Student 不带 skill，也不生成 Teacher target。
+current Student 不带 skill，也不重建 Teacher target。这样 \(S_{k+1}\) 的参数变化
+只出现在被测 Student 一侧，不会同时移动监督锚点。
 
 ### 9.2 两个 checkpoint 对同一 target 的 gap
 
@@ -524,7 +526,7 @@ d_{\mathrm{current}}(s).
 
 解释：
 
-- \(LP>0\)：new Student 比 old Student 更接近当前 skill-conditioned Teacher；
+- \(LP>0\)：new Student 比 old Student 更接近冻结的 \(S_k+\text{skill}\) Teacher；
 - \(LP=0\)：两个 checkpoint 在该 target 上没有可测差异；
 - \(LP<0\)：new Student 在该 target 上反而更远。
 
@@ -651,7 +653,7 @@ Buyer 让 current Student 进入以下状态：
 current Student 在真实 session 中产生自己的 action。系统取 action 前状态 \(s\)，让：
 
 \[
-S_{k+1}+\text{skill}
+S_k+\text{skill}
 \]
 
 产生 Teacher target：
@@ -819,9 +821,9 @@ refresh Buyer
 
 负责：
 
-- current hinted view；
-- current unhinted view；
+- previous hinted view；
 - previous unhinted view；
+- current unhinted view；
 - target cache；
 - teacher-forced prompt log-prob scoring；
 - previous/current gap。
@@ -847,7 +849,7 @@ refresh Buyer
 - FrozenRenderer 生成 public user action；
 - current Student 推进真实 session；
 - 提取自然 Student decisions；
-- 生成 current skill-conditioned Teacher target；
+- 由 previous checkpoint 生成 \(S_k+\text{skill}\) Teacher target；
 - 调用 StageGapScorer；
 - 聚合 trajectory reward；
 - validity 和 scoring error 记录。
@@ -887,14 +889,14 @@ Buyer training 阶段主要服务为：
 
 | Role | 默认端口 | 含义 |
 |---|---:|---|
-| policy | 8000 | current Student 与 current self-Teacher |
-| policy_previous | 8001 | previous Student |
+| policy | 8000 | current unprivileged Student \(S_{k+1}\) |
+| policy_previous | 8001 | previous Student \(S_k\) 与 \(S_k+\text{skill}\) Teacher anchor |
 | buyer | 8002 | 当前 Buyer endpoint |
 | rollout | 8003 | Swift online Buyer rollout |
 
-Teacher action、current hinted logits 和 current unhinted logits 都来自 policy 服务。
-
-previous 服务只对冻结 target 做无 skill teacher-forced scoring。
+Teacher action、previous hinted logits 和 previous unhinted logits 都来自
+policy_previous 服务。policy 服务只推进真实 session，并对同一冻结 target 做
+current unhinted teacher-forced scoring。
 
 ---
 
@@ -908,7 +910,7 @@ Student dataset 使用 schema v4；Teacher target 使用 schema v2。
 - Teacher action hash；
 - raw target hash；
 - sharpened target hash；
-- Teacher/current checkpoint ID；
+- Teacher-anchor checkpoint ID；
 - private hint hash；
 - Student-visible messages；
 - hinted Teacher messages；
@@ -1133,7 +1135,7 @@ next round
 - Random structured Buyer；
 - Buyer-SFT；
 - Buyer-GRPO with task reward；
-- Buyer-GRPO with absolute current Teacher gap；
+- Buyer-GRPO with absolute previous-skill Teacher gap；
 - Buyer-GRPO with positive checkpoint LP。
 
 ### 19.2 Teacher target 消融
@@ -1149,8 +1151,8 @@ next round
 
 - previous/current 同 checkpoint；
 - current/previous 对调；
-- previous-anchored Teacher target；
-- current-anchored Teacher target；
+- previous-skill-anchored Teacher target（主方法）；
+- current-skill-anchored Teacher target（moving-target 对照）；
 - raw signed LP；
 - positive-clipped LP；
 - 是否加入 residual-gap gate，作为后续单独消融而不是当前主方法。
@@ -1284,7 +1286,7 @@ next round
 需要检查：
 
 - high/medium/low LP 的真实等预算 gain；
-- current-anchored Teacher bias；
+- previous-skill anchor 与实际 Student update 的对齐；
 - task/probe/test alignment；
 - Buyer 数据多样性；
 - group reward 方差。
@@ -1296,7 +1298,7 @@ next round
 - previous/current checkpoint 太接近；
 - Student update 太小；
 - 当前状态不受本轮训练影响；
-- Teacher target 过于接近 current unhinted Student；
+- Teacher target 过于接近 previous unhinted Student；
 - negative LP 被截断；
 - scoring error 被 fail closed；
 - 整个 group 的 Buyer 计划过于相似。
@@ -1316,14 +1318,17 @@ next round
 
 如果它下一轮已经饱和，连续 checkpoint gap decrease 应逐渐消失；但是否足以形成稳定课程需要实验验证。
 
-### 22.4 Current-anchored target 产生偏差
+### 22.4 Previous-skill anchor 与 Student update 不对齐
 
-Buyer reward 阶段的 \(\widetilde q_h\) 由 \(S_{k+1}+\text{skill}\) 构造，因此 target 本身随 current Student 改变。
+主方法的 \(\widetilde q_h\) 由冻结的 \(S_k+\text{skill}\) 构造，避免 target 随
+current Student 一起移动。但如果 \(S_k\to S_{k+1}\) 的训练数据或 skill 与 Buyer
+probe 完全不相关，固定旧 target 的 LP 仍可能不是未来数据价值的好代理。
 
-必须通过以下消融判断结果是否依赖 moving target：
+必须通过以下消融判断结果是否依赖 anchor 选择：
 
 - fixed Teacher target；
-- previous-anchored target；
+- previous-skill-anchored target；
+- current-skill-anchored moving target；
 - checkpoint swap；
 - identical checkpoint；
 - target hash 稳定性。
@@ -1491,20 +1496,20 @@ for round_index in range(num_rounds):
 
             for state in natural_decision_states(trajectory):
                 teacher_action, private_skill = generate_one_teacher_action(
-                    checkpoint=current_student,
+                    checkpoint=previous_student,
                     state=state,
                     with_skill=True,
                 )
 
                 q_h = teacher_forced_distribution(
-                    checkpoint=current_student,
+                    checkpoint=previous_student,
                     state=state,
                     action=teacher_action,
                     with_skill=True,
                 )
 
-                p_current = teacher_forced_distribution(
-                    checkpoint=current_student,
+                p_previous = teacher_forced_distribution(
+                    checkpoint=previous_student,
                     state=state,
                     action=teacher_action,
                     with_skill=False,
@@ -1513,12 +1518,12 @@ for round_index in range(num_rounds):
                 q_tilde = freeze(
                     skill_contrast_sharpen(
                         hinted=q_h,
-                        unhinted=p_current,
+                        unhinted=p_previous,
                     )
                 )
 
-                p_previous = teacher_forced_distribution(
-                    checkpoint=previous_student,
+                p_current = teacher_forced_distribution(
+                    checkpoint=current_student,
                     state=state,
                     action=teacher_action,
                     with_skill=False,
@@ -1563,11 +1568,12 @@ for round_index in range(num_rounds):
 标准 OPD 只回答 Student 到达某个状态后如何使用 Teacher distribution，却没有解决环境应该把当前 Student 带到哪里。
 
 我们学习一个随 Student checkpoint 更新的闭环环境策略。对于 current Student
-新生成 session 中的每个自然决策状态，我们使用同一 current checkpoint 的
-skill-conditioned 与 unconditioned views 构造一个 token-level skill-contrast
-sharpened self-Teacher target。随后，在完全相同的状态、target action、token 序列
-和 loss mask 上，对 previous 与 current Student 进行 teacher-forced scoring，
-并以 Teacher gap 的正下降作为 Buyer reward。
+新生成 session 中的每个自然决策状态，我们使用冻结的 previous checkpoint
+\(S_k\) 的 skill-conditioned 与 unconditioned views 构造一个 token-level
+skill-contrast sharpened self-Teacher target。随后，在完全相同的状态、target
+action、token 序列和 loss mask 上，对无 skill 的 \(S_k\) 与 \(S_{k+1}\) 进行
+teacher-forced scoring，并以相对 \(S_k+\text{skill}\) 固定示范的 gap 正下降作为
+Buyer reward。
 
 Student 与 Buyer 按 round 交替更新：Student 蒸馏 private-skill Teacher target；Buyer 学习生成最近出现 checkpoint-level learning progress 的状态，从而改变下一轮 OPD 数据分布。
 
@@ -1606,7 +1612,7 @@ S_k -> S_(k+1)
           ↓
 Buyer B_k 与 current Student 采样 G 条新 trajectories
           ↓
-每个状态由 current+skill 构造一个冻结 Teacher target
+每个状态由 previous S_k+skill 构造一个冻结 Teacher target
           ↓
 previous/current 无 skill teacher-forced scoring
           ↓

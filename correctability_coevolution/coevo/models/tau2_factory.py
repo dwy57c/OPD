@@ -24,17 +24,18 @@ class Tau2PolicyFactory:
         return self._agent(environment, self.config.policy)
 
     def teacher(self, environment, task, hint_result=None):
+        endpoint = self.config.teacher
         if self.config.teacher_hint_mode == "closed_model":
             return HintedTeacherAgent(
                 tools=environment.get_tools(),
                 domain_policy=environment.get_policy(),
                 task=task,
-                llm=self.config.policy.litellm_model,
-                llm_args=self.config.policy.litellm_args,
+                llm=endpoint.litellm_model,
+                llm_args=endpoint.litellm_args,
                 hinter_endpoint=self.config.teacher_hinter,
                 initial_hint=hint_result,
             )
-        return self._agent(environment, self.config.policy)
+        return self._agent(environment, endpoint)
 
     def buyer_reference(self, environment, task):
         user_tools = environment.get_user_tools() if environment.user_tools else None

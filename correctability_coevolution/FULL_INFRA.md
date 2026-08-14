@@ -19,7 +19,9 @@ Student distillation: S_k -> S_(k+1)
         ↓
 同时服务 previous=S_k, current=S_(k+1)
         ↓
-Buyer GRPO 在新 rollout 上计算 stage learning progress
+current 生成新 rollout；previous+skill 生成冻结 Teacher target
+        ↓
+Buyer GRPO 计算 S_k -> S_(k+1) 对该旧 target 的 learning progress
         ↓
 B_k -> B_(k+1)
         ↓
@@ -86,7 +88,7 @@ cache hit 不会重新生成 action、重新取 hinted logits 或重新 sharpen�
 
 ## 4. Skill-contrast target construction
 
-当前 checkpoint `S_k` 在相同 token prefix 上给出：
+Teacher-anchor checkpoint `S_k` 在相同 token prefix 上给出：
 
 ```text
 q_h = p(S_k | s, private skill)
@@ -127,13 +129,14 @@ Buyer reward
 terminal verifier score
 ```
 
-## 6. Three-view stage scorer
+## 6. Previous-skill-anchor three-view scorer
 
 Buyer rollout 中每个新 `x` 使用三种 view：
 
-1. current hinted：产生 raw `q_h`；
-2. current unhinted：既是 `p_0`，也是 `d_current` 的 Student；
-3. previous unhinted：用于 `d_previous`。
+1. previous hinted (`S_k+skill`)：产生 raw `q_h` 和完整 Teacher action；
+2. previous unhinted (`S_k`)：既是 skill contrast 的 `p_0`，也用于
+   `d_previous`；
+3. current unhinted (`S_(k+1)`)：用于 `d_current`。
 
 先用 1 与 2 构造一次 `q_tilde_h`，再复用：
 
@@ -145,6 +148,10 @@ LP         = d_previous - d_current
 
 所有距离按 active target-token 数平均。previous/current 对调应翻转 raw LP 符号；
 两端 logits 完全相同时 LP 应为数值零。
+
+关键约束是 `teacher_checkpoint == previous_checkpoint`。禁止用
+`S_(k+1)+skill` 重建 target；否则 Teacher 本身的目标漂移会与 Student 的真实学习
+进度混在一起。
 
 ## 7. Buyer reward 与 GRPO
 
@@ -169,6 +176,7 @@ previous_gaps / current_gaps
 learning_progresses / positive_learning_progresses
 decision_rewards
 checkpoint_previous / checkpoint_current
+checkpoint_teacher_anchor
 raw_teacher_target_hashes / teacher_target_hashes
 skill_contrast_scores / skill_gate_values / sharpening_temperatures
 raw_teacher_entropies / sharpened_teacher_entropies
@@ -195,6 +203,17 @@ scoring_errors
 
 Student 自身答错、工具选错或任务失败不是 Buyer invalidity，因为这些是环境要探测
 的能力区域。Scoring error 会保留结构化错误记录，但没有旧 proxy fallback。
+
+训练侧默认 `COEVO_BUYER_BETA=0.01`。Trainer reference-KL 仅作为 policy regularizer；
+Buyer 的 scalar reward 仍然只有 learning progress。Qwen3.5 Buyer 必须显式使用
+`COEVO_BUYER_ATTN_IMPL=flash_attn`（Swift 的 FlashAttention2 路径）；Trainer 会拒绝
+Qwen3.5 的默认 SDPA/eager 配置。训练同时关闭 `logging_nan_inf_filter`，避免日志把
+NaN/Inf loss 替换成历史均值。
+
+Buyer LoRA 保存后必须逐 tensor 检查 NaN/Inf；任何非有限 checkpoint 都拒绝进入下一
+轮。非有限梯度 guard 默认直接报错。仅在定位特定 kernel 数值问题时可以显式设置
+`COEVO_NONFINITE_GRADIENT_ACTION=zero`，且必须记录被清零的 value/tensor 数并继续
+通过保存后 finite check。
 
 ## 9. Artifact contract
 

@@ -50,16 +50,20 @@ class HintEndpoint:
     def from_env(cls, required: bool = False) -> "HintEndpoint | None":
         base_url = os.getenv(
             "COEVO_TEACHER_HINT_URL",
-            os.getenv("GOOGLE_BASE_URL", ""),
+            os.getenv(
+                "OPENAI_BASE_URL",
+                os.getenv("OPENAI_API_BASE", os.getenv("GOOGLE_BASE_URL", "")),
+            ),
         ).rstrip("/")
         api_key = os.getenv(
             "COEVO_TEACHER_HINT_API_KEY",
-            os.getenv("GOOGLE_API_KEY", ""),
+            os.getenv("OPENAI_API_KEY", os.getenv("GOOGLE_API_KEY", "")),
         )
         if not base_url:
             if required:
                 raise ValueError(
-                    "COEVO_TEACHER_HINT_URL or GOOGLE_BASE_URL is required "
+                    "COEVO_TEACHER_HINT_URL, OPENAI_BASE_URL, or GOOGLE_BASE_URL "
+                    "is required "
                     "for closed-model Teacher hints"
                 )
             return None
@@ -95,8 +99,10 @@ class HintEndpoint:
 
 @dataclass(frozen=True)
 class InfraConfig:
-    # Student and Teacher are two information views over this one policy model.
-    # There is deliberately no separate Teacher model endpoint.
+    # Student and Teacher are two information views over one stage checkpoint.
+    # Collection uses the current checkpoint; Buyer scoring deliberately anchors
+    # the Teacher to the previous checkpoint that supplied the skill-conditioned
+    # demonstrations for the latest Student update.
     policy: ModelEndpoint
     buyer_reference: ModelEndpoint
     previous_policy: ModelEndpoint | None = None
@@ -115,6 +121,7 @@ class InfraConfig:
     seed: int = 42
     teacher_hint_mode: str = "closed_model"
     teacher_hinter: HintEndpoint | None = None
+    teacher_anchor: str = "current"
     current_policy_checkpoint: str = ""
     previous_policy_checkpoint: str = ""
     buyer_checkpoint: str = ""
@@ -144,6 +151,15 @@ class InfraConfig:
         if self.teacher_hint_mode == "closed_model" and self.teacher_hinter is None:
             raise ValueError(
                 "teacher_hinter is required when teacher_hint_mode='closed_model'"
+            )
+        if self.teacher_anchor not in {"current", "previous"}:
+            raise ValueError(
+                "teacher_anchor must be 'current' or 'previous', got "
+                f"{self.teacher_anchor!r}"
+            )
+        if self.teacher_anchor == "previous" and self.previous_policy is None:
+            raise ValueError(
+                "teacher_anchor='previous' requires a previous-policy endpoint"
             )
         if self.max_teacher_targets < 0:
             raise ValueError(
@@ -186,8 +202,20 @@ class InfraConfig:
 
     @property
     def teacher(self) -> ModelEndpoint:
-        """Compatibility/readability alias: Teacher is the same shared policy."""
+        """Skill-conditioned policy used to generate the frozen demonstration."""
+        if self.teacher_anchor == "previous":
+            if self.previous_policy is None:  # guarded by __post_init__
+                raise ValueError("previous-policy endpoint is not configured")
+            return self.previous_policy
         return self.policy
+
+    @property
+    def teacher_anchor_checkpoint(self) -> str:
+        if self.teacher_anchor == "previous":
+            if self.previous_policy is None:  # guarded by __post_init__
+                raise ValueError("previous-policy endpoint is not configured")
+            return self.previous_policy_checkpoint or self.previous_policy.model
+        return self.current_policy_checkpoint or self.policy.model
 
     @classmethod
     def from_env(cls) -> "InfraConfig":
@@ -254,6 +282,7 @@ class InfraConfig:
             seed=int(os.getenv("COEVO_SEED", "42")),
             teacher_hint_mode=hint_mode,
             teacher_hinter=HintEndpoint.from_env(required=hint_mode == "closed_model"),
+            teacher_anchor=os.getenv("COEVO_TEACHER_ANCHOR", "current"),
             current_policy_checkpoint=current_checkpoint,
             previous_policy_checkpoint=previous_checkpoint,
             buyer_checkpoint=buyer_checkpoint,

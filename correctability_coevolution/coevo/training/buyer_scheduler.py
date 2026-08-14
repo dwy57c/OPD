@@ -1,4 +1,5 @@
 import asyncio
+import os
 from dataclasses import replace
 from threading import Lock
 
@@ -49,7 +50,7 @@ def visible_buyer_content(content: str | None) -> str:
 
 
 class Tau2BuyerScheduler(MultiTurnScheduler):
-    """Run Buyer actions and reward only consecutive-checkpoint stage progress."""
+    """Reward progress toward frozen S_k+skill demonstrations."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -133,7 +134,7 @@ class Tau2BuyerScheduler(MultiTurnScheduler):
                     result.append(float(value))
             return result
 
-        return {
+        info = {
             "buyer_reward": validity * raw_reward,
             "reward_source": "stage_learning_progress",
             "trajectory_validity": validity,
@@ -149,6 +150,9 @@ class Tau2BuyerScheduler(MultiTurnScheduler):
             "decision_rewards": decision_rewards,
             "checkpoint_previous": self.base_config.previous_policy_checkpoint,
             "checkpoint_current": self.base_config.current_policy_checkpoint,
+            "checkpoint_teacher_anchor": (
+                self.base_config.teacher_anchor_checkpoint
+            ),
             "teacher_target_hashes": values("teacher_target_hash"),
             "raw_teacher_target_hashes": values("raw_teacher_target_hash"),
             "skill_contrast_scores": flattened("skill_contrast_scores"),
@@ -160,6 +164,31 @@ class Tau2BuyerScheduler(MultiTurnScheduler):
             ),
             "scoring_errors": scoring_errors,
         }
+        if os.getenv("COEVO_CAPTURE_FULL_TRACE") == "1":
+            info.update(
+                {
+                    "domain": str(data.get("domain") or self.base_config.domain),
+                    "task_split": str(
+                        data.get("task_split") or self.base_config.task_split
+                    ),
+                    "task_id": str(data.get("task_id") or self.base_config.task_id),
+                    "buyer_private_plans": list(
+                        data.get("buyer_private_plans", [])
+                    ),
+                    "buyer_public_actions": list(
+                        data.get("buyer_public_actions", [])
+                    ),
+                    "plan_action_consistency": list(
+                        data.get("plan_action_consistency", [])
+                    ),
+                    "tau_history": list(data.get("tau_history", [])),
+                    "stage_progress_decisions": rows,
+                    "teacher_target_labels": list(
+                        data.get("teacher_target_labels", [])
+                    ),
+                }
+            )
+        return info
 
     def _mark_truncated(self, infer_request) -> dict:
         infer_request.data_dict["trajectory_validity"] = 0.0

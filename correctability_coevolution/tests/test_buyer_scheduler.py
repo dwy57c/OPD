@@ -1,4 +1,5 @@
 import asyncio
+import json
 from copy import deepcopy
 
 import pytest
@@ -13,6 +14,7 @@ from swift.infer_engine.protocol import (
 
 from coevo.training import buyer_scheduler as scheduler_module
 from coevo.training.buyer_scheduler import Tau2BuyerScheduler, visible_buyer_content
+from coevo.training.swift_plugin import _capture_buyer_reward_groups
 
 
 @pytest.fixture(autouse=True)
@@ -22,6 +24,7 @@ def scheduler_environment(monkeypatch):
     monkeypatch.setenv("COEVO_PREVIOUS_POLICY_PATH", "/previous")
     monkeypatch.setenv("COEVO_PREVIOUS_POLICY_CHECKPOINT", "/previous")
     monkeypatch.setenv("COEVO_CURRENT_POLICY_CHECKPOINT", "/current")
+    monkeypatch.setenv("COEVO_TEACHER_ANCHOR", "previous")
 
 
 def make_response(content: str, token_id: int):
@@ -87,6 +90,63 @@ def test_rollout_reward_is_mean_stage_progress_only():
     assert infos["reward_source"] == "stage_learning_progress"
     assert infos["learning_progresses"] == [0.2, -0.1]
     assert infos["teacher_target_hashes"] == ["a", "b"]
+    assert infos["checkpoint_teacher_anchor"] == "/previous"
+
+
+def test_full_trace_capture_exposes_exact_plan_action_and_decision(monkeypatch):
+    monkeypatch.setenv("COEVO_CAPTURE_FULL_TRACE", "1")
+    scheduler = Tau2BuyerScheduler(infer_engine=object(), max_turns=2)
+    decision = {
+        "decision_reward": 0.2,
+        "previous_gap": 0.5,
+        "current_gap": 0.3,
+        "learning_progress": 0.2,
+        "positive_learning_progress": 0.2,
+    }
+    infos = scheduler._rollout_infos(
+        {
+            "domain": "airline",
+            "task_split": "train",
+            "task_id": "1",
+            "buyer_private_plans": [{"next_move": "clarify_previous_statement"}],
+            "buyer_public_actions": [{"content": "Please clarify."}],
+            "plan_action_consistency": [1.0],
+            "tau_history": [{"role": "user", "content": "Please clarify."}],
+            "stage_progress_decisions": [decision],
+            "teacher_target_labels": [{"teacher_action": {"role": "assistant"}}],
+        }
+    )
+
+    assert infos["task_id"] == "1"
+    assert infos["buyer_private_plans"][0]["next_move"] == (
+        "clarify_previous_statement"
+    )
+    assert infos["buyer_public_actions"][0]["content"] == "Please clarify."
+    assert infos["stage_progress_decisions"] == [decision]
+
+
+def test_reward_trace_matches_swift_group_normalization(monkeypatch, tmp_path):
+    trace_path = tmp_path / "buyer_groups.jsonl"
+    monkeypatch.setenv("COEVO_BUYER_TRACE_PATH", str(trace_path))
+    monkeypatch.delenv("RANK", raising=False)
+    monkeypatch.delenv("WORLD_SIZE", raising=False)
+    _capture_buyer_reward_groups(
+        [0.1, 0.3],
+        [0.1, 0.3],
+        [{"task_id": "1"}, {"task_id": "1"}],
+        group_ids=None,
+        group_size=2,
+    )
+
+    record = json.loads(trace_path.read_text(encoding="utf-8"))
+    assert record["group_mean"] == pytest.approx(0.2)
+    assert record["group_sample_std"] == pytest.approx(2**0.5 / 10)
+    assert record["normalized_advantages"][0] == pytest.approx(
+        -0.1 / (2**0.5 / 10 + 1e-4)
+    )
+    assert record["normalized_advantages"][1] == pytest.approx(
+        0.1 / (2**0.5 / 10 + 1e-4)
+    )
 
 
 def test_scoring_failure_is_fail_closed_without_fallback():

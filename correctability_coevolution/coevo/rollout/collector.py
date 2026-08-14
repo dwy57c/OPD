@@ -8,7 +8,11 @@ from coevo.artifacts import artifact_metadata, canonical_hash
 from coevo.environment import Tau2Environment
 from coevo.environment.tau2 import dump_messages, load_messages
 from coevo.models import format_teacher_system_prompt_with_hint
-from coevo.rollout.views import buyer_view, student_view
+from coevo.rollout.views import (
+    buyer_view,
+    student_view,
+    swift_cached_target_messages,
+)
 from coevo.scoring import (
     TeacherTargetBuilder,
     TeacherTargetLabeler,
@@ -31,6 +35,7 @@ class NaturalDecisionCollector:
         self.labeler = labeler
         self.max_decisions = max_decisions
         self._student_system_prompt = None
+        self._student_tool_schemas = None
         self._target_builder = target_builder
 
     def _builder(self) -> TeacherTargetBuilder:
@@ -44,7 +49,15 @@ class NaturalDecisionCollector:
                 self.environment.fresh_environment()
             )
             self._student_system_prompt = student.system_prompt
+            self._student_tool_schemas = [
+                deepcopy(tool.openai_schema)
+                for tool in (getattr(student, "tools", None) or [])
+            ]
         return self._student_system_prompt
+
+    def _tool_schemas(self) -> list[dict]:
+        self._system_prompt()
+        return deepcopy(self._student_tool_schemas or [])
 
     def _materialize_target(self, decision: dict) -> dict:
         candidate = dict(decision)
@@ -153,7 +166,11 @@ class NaturalDecisionCollector:
             rows.append(
                 {
                     **artifact_metadata(self.environment.config),
-                    "messages": deepcopy_messages(target.student_visible_messages),
+                    "messages": swift_cached_target_messages(
+                        deepcopy_messages(target.student_visible_messages)
+                    ),
+                    "tools": self._tool_schemas(),
+                    "response_token_ids": list(target.target_token_ids),
                     "training_target": "skill_contrast_teacher_distill",
                     "teacher_target_record": target.to_dict(),
                     "state_hash": target.state_hash,

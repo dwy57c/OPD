@@ -111,7 +111,8 @@ def validate_resume_manifest(
         "buyer_checkpoint_before": str(buyer_model),
         "task_ids": task_ids,
         "reward_name": "tau2_stage_learning_progress",
-        "reward_formula_version": "positive-stage-learning-progress-v2",
+        "reward_formula_version": "previous-skill-anchor-progress-v3",
+        "buyer_teacher_anchor": "previous",
         "teacher_target_version": env.get(
             "COEVO_TEACHER_TARGET_VERSION", "skill-contrast-sharpened-v2"
         ),
@@ -213,6 +214,10 @@ def main() -> None:
     if args.start_services:
         start_env = dict(
             env,
+            # Collection needs the policy and fixed User/Buyer endpoint only.
+            # Starting the GRPO rollout copy here wastes an entire model replica
+            # before the Student checkpoint pair exists.
+            COEVO_START_ROLLOUT="false",
             COEVO_POLICY_PATH=str(policy_model),
             COEVO_BUYER_PATH=str(buyer_model),
         )
@@ -232,6 +237,7 @@ def main() -> None:
             continue
         round_env = dict(
             env,
+            COEVO_TEACHER_ANCHOR="current",
             COEVO_ROUND_INDEX=str(round_index),
             COEVO_CURRENT_POLICY_CHECKPOINT=str(policy_model),
             COEVO_PREVIOUS_POLICY_CHECKPOINT=str(previous_policy_model),
@@ -283,8 +289,9 @@ def main() -> None:
                 "COEVO_POLICY_URL", "http://127.0.0.1:8000"
             ),
             "reward_name": "tau2_stage_learning_progress",
-            "reward_formula_version": "positive-stage-learning-progress-v2",
+            "reward_formula_version": "previous-skill-anchor-progress-v3",
             "reward_scaling": "group",
+            "buyer_teacher_anchor": "previous",
             "dataset_schema_version": 4,
             "target_schema_version": 2,
             "teacher_target_version": round_env.get(
@@ -375,7 +382,10 @@ def main() -> None:
             )
             from coevo.artifacts import canonical_hash
 
-            manifest["teacher_checkpoint"] = next_policy_model
+            # The latest Student update was supervised by S_k+skill. Buyer
+            # progress must keep that pre-update Teacher demonstration fixed
+            # instead of moving the target to S_(k+1)+skill.
+            manifest["teacher_checkpoint"] = str(policy_model)
             manifest["tokenizer_hash"] = canonical_hash(manifest["tokenizer_id"])
             manifest["checkpoint_tuple"] = {
                 "previous_checkpoint": str(policy_model),
@@ -387,6 +397,7 @@ def main() -> None:
             write_manifest(manifest_path, manifest)
             buyer_phase_env = dict(
                 round_env,
+                COEVO_TEACHER_ANCHOR="previous",
                 COEVO_PREVIOUS_POLICY_PATH=str(policy_model),
                 COEVO_PREVIOUS_POLICY_CHECKPOINT=str(policy_model),
                 COEVO_PREVIOUS_POLICY_REVISION=model_revision(
@@ -493,6 +504,7 @@ def main() -> None:
             buyer_model = next_buyer_model
             manifest["stage_progress_summary"] = {
                 "reward_name": manifest["reward_name"],
+                "teacher_anchor_checkpoint": manifest["student_checkpoint_before"],
                 "checkpoint_previous": manifest["student_checkpoint_before"],
                 "checkpoint_current": manifest["student_checkpoint_after"],
                 "aggregation": "mean_over_valid_natural_decisions",

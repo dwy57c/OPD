@@ -9,22 +9,12 @@ from swift.rlhf_trainers import GKDTrainer
 from swift.rlhf_trainers.gkd_trainer import DataSource
 
 from coevo.artifacts import assistant_action_hash
+from coevo.rollout.views import swift_cached_target_messages
 from coevo.scoring.teacher_target import TeacherTargetRecord
 
 
 DATASET_SCHEMA_VERSION = 4
 TRAINING_TARGET = "skill_contrast_teacher_distill"
-
-
-def _final_assistant(messages: list[dict], field: str) -> dict:
-    if not messages or messages[-1].get("role") != "assistant":
-        raise ValueError(f"{field} must end in the complete Teacher assistant action")
-    action = messages[-1]
-    if not action.get("content") and not action.get("tool_calls"):
-        raise ValueError(f"{field} ends in an empty Teacher action")
-    if action.get("content") and action.get("tool_calls"):
-        raise ValueError(f"{field} cannot mix text and tool calls")
-    return action
 
 
 def validate_student_training_row(row: dict) -> TeacherTargetRecord:
@@ -42,13 +32,31 @@ def validate_student_training_row(row: dict) -> TeacherTargetRecord:
     messages = row.get("messages")
     if not isinstance(messages, list):
         raise ValueError("schema v4 requires a messages list")
-    action = _final_assistant(messages, "messages")
     target_value = row.get("teacher_target_record")
     if not isinstance(target_value, dict):
         raise ValueError("schema v4 row is missing teacher_target_record")
     target = TeacherTargetRecord.from_dict(target_value)
-    if assistant_action_hash(action) != target.teacher_action_hash:
-        raise ValueError("training messages end in a different Teacher action")
+    if assistant_action_hash(target.teacher_action) != target.teacher_action_hash:
+        raise ValueError("cached Teacher action hash is invalid")
+    expected_messages = swift_cached_target_messages(
+        list(target.student_visible_messages)
+    )
+    token_bearing_messages = [
+        {"role": message.get("role"), "content": message.get("content") or ""}
+        for message in messages
+    ]
+    if token_bearing_messages != expected_messages:
+        raise ValueError(
+            "training messages differ from the cached Teacher trajectory after "
+            "Swift tool-call normalization"
+        )
+    response_token_ids = row.get("response_token_ids")
+    if not isinstance(response_token_ids, list) or tuple(response_token_ids) != (
+        target.target_token_ids
+    ):
+        raise ValueError(
+            "response_token_ids must exactly equal the frozen Teacher target tokens"
+        )
     if row.get("teacher_target_hash") != target.teacher_target_hash:
         raise ValueError("row and cached Teacher target hashes do not match")
     return target
@@ -137,6 +145,31 @@ def cached_target_distillation(
     return loss, metrics
 
 
+def mask_only_cached_target(
+    input_ids: torch.Tensor, targets: list[TeacherTargetRecord]
+) -> torch.Tensor:
+    """Mask every token except the final exact frozen Teacher target span."""
+    if input_ids.ndim != 2 or input_ids.shape[0] != len(targets):
+        raise ValueError("input_ids and cached targets must form one aligned batch")
+    labels = torch.full_like(input_ids, -100)
+    for batch_index, target in enumerate(targets):
+        sequence = input_ids[batch_index].tolist()
+        needle = list(target.target_token_ids)
+        starts = [
+            index
+            for index in range(len(sequence) - len(needle) + 1)
+            if sequence[index : index + len(needle)] == needle
+        ]
+        if not starts:
+            raise ValueError(
+                "frozen Teacher target token IDs are absent from the encoded sequence"
+            )
+        start = starts[-1]
+        stop = start + len(needle)
+        labels[batch_index, start:stop] = input_ids[batch_index, start:stop]
+    return labels
+
+
 class NaturalDecisionStudentTrainer(GKDTrainer):
     """Distill cached skill-contrast Teacher targets at natural boundaries.
 
@@ -168,6 +201,9 @@ class NaturalDecisionStudentTrainer(GKDTrainer):
         rows = [self._view_row(row) for row in inputs]
         encoded = GKDTrainer._prepare_batch_inputs(
             self, rows, encode_prompt_only=False
+        )
+        encoded["labels"] = mask_only_cached_target(
+            encoded["input_ids"], targets
         )
         encoded["_data_source"] = DataSource.DATASET
         encoded["_teacher_target_records"] = targets

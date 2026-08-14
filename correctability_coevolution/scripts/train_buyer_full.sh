@@ -26,6 +26,8 @@ if [[ $NPROC -ne ${#TRAIN_GPU_IDS[@]} ]]; then
 fi
 
 TUNER_TYPE=${COEVO_BUYER_TUNER_TYPE:-full}
+BUYER_ATTN_IMPL=${COEVO_BUYER_ATTN_IMPL:-flash_attn}
+BUYER_BETA=${COEVO_BUYER_BETA:-0.01}
 if [[ $TUNER_TYPE == lora ]]; then
   LEARNING_RATE=${COEVO_BUYER_LEARNING_RATE:-1e-5}
 else
@@ -34,7 +36,7 @@ fi
 TRAINER_ARGS=(
   --rlhf_type grpo \
   --model "${COEVO_BUYER_BASE_MODEL:-$COEVO_BUYER_PATH}" \
-  --model_type "${COEVO_MODEL_TYPE:-qwen3}" \
+  --model_type "${COEVO_BUYER_MODEL_TYPE:-${COEVO_MODEL_TYPE:-qwen3}}" \
   --template "${COEVO_BUYER_TEMPLATE_TYPE:-qwen3}" \
   --external_plugins "$COEVO_ROOT/coevo/training/swift_plugin.py" \
   --dataset "$DATA" \
@@ -50,14 +52,16 @@ TRAINER_ARGS=(
   --max_completion_length "${COEVO_BUYER_MAX_COMPLETION_LENGTH:-512}" \
   --temperature 0.8 \
   --enable_thinking "${COEVO_BUYER_ENABLE_THINKING:-true}" \
-  --beta "${COEVO_BUYER_BETA:-0.01}" \
+  --beta "$BUYER_BETA" \
   --scale_rewards group \
   --torch_dtype bfloat16 \
+  --attn_impl "$BUYER_ATTN_IMPL" \
   --max_steps "$STEPS" \
   --per_device_train_batch_size 1 \
   --gradient_accumulation_steps "${COEVO_BUYER_GRADIENT_ACCUMULATION_STEPS:-4}" \
   --learning_rate "$LEARNING_RATE" \
-  --gradient_checkpointing true \
+  --gradient_checkpointing "${COEVO_BUYER_GRADIENT_CHECKPOINTING:-true}" \
+  --logging_nan_inf_filter false \
   --logging_steps 1 \
   --save_steps "${COEVO_BUYER_SAVE_STEPS:-$STEPS}" \
   --save_total_limit "${COEVO_BUYER_SAVE_TOTAL_LIMIT:-5}" \
@@ -92,4 +96,14 @@ if ((NPROC > 1)); then
     -m swift.cli.rlhf "${TRAINER_ARGS[@]}"
 else
   CUDA_VISIBLE_DEVICES="$TRAIN_GPUS" python -m swift.cli.rlhf "${TRAINER_ARGS[@]}"
+fi
+
+if [[ $TUNER_TYPE == lora ]]; then
+  LATEST_ADAPTER=$(find "$OUT" -type f -name adapter_model.safetensors \
+    -printf '%T@ %p\n' | sort -nr | head -n 1 | cut -d' ' -f2-)
+  if [[ -z ${LATEST_ADAPTER:-} ]]; then
+    echo "Buyer LoRA training did not produce adapter_model.safetensors" >&2
+    exit 1
+  fi
+  python "$COEVO_ROOT/scripts/check_adapter_finite.py" "$LATEST_ADAPTER"
 fi

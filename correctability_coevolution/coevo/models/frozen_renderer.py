@@ -6,24 +6,9 @@ from typing import Callable, Iterable
 
 from tau2.data_model.message import ToolCall, UserMessage
 
-from coevo.models.buyer_plan import BuyerPlan
+from coevo.models.buyer_plan import BUYER_ACTION_PAYLOAD_FIELDS, BuyerPlan
 
 
-_PAYLOAD_FIELDS = {
-    "answer_normally": {"answer"},
-    "reveal_hidden_constraint": {"constraint"},
-    "withhold_information": set(),
-    "clarify_previous_statement": {"clarification"},
-    "challenge_student_assumption": {"assumption"},
-    "request_alternative": {"criteria"},
-    "accept_proposal": set(),
-    "reject_proposal": {"reason"},
-    "confirm_action": {"action"},
-    "execute_user_tool": {"tool_name", "arguments"},
-    "ask_about_cost": set(),
-    "ask_about_policy": set(),
-    "stop": {"stop_reason"},
-}
 _VALID_STOP_REASONS = {
     "task_complete",
     "scenario_requires_stop",
@@ -122,7 +107,7 @@ class FrozenRenderer:
 
     @staticmethod
     def _validate_payload(plan: BuyerPlan, context: BuyerRenderContext) -> None:
-        required = _PAYLOAD_FIELDS[plan.next_move]
+        required = set(BUYER_ACTION_PAYLOAD_FIELDS[plan.next_move])
         actual = set(plan.payload)
         if actual != required:
             raise ValueError(

@@ -45,14 +45,16 @@ class SparseTargetView:
 @dataclass(frozen=True)
 class StageGapScore:
     teacher_target: TeacherTargetRecord
-    previous_view: SparseTargetView
+    current_view: SparseTargetView
     progress: StageProgressResult
+    checkpoint_teacher_anchor: str
     checkpoint_previous: str
     checkpoint_current: str
 
     def to_dict(self) -> dict[str, Any]:
         return {
             **self.progress.to_dict(),
+            "checkpoint_teacher_anchor": self.checkpoint_teacher_anchor,
             "checkpoint_previous": self.checkpoint_previous,
             "checkpoint_current": self.checkpoint_current,
             "raw_teacher_target_hash": self.teacher_target.raw_teacher_target_hash,
@@ -172,7 +174,7 @@ class PromptLogprobClient:
 
 
 class TeacherTargetBuilder:
-    """Build and cache one raw/sharpened target from the current checkpoint."""
+    """Build and cache one raw/sharpened target from the configured anchor."""
 
     def __init__(
         self,
@@ -388,12 +390,10 @@ class TeacherTargetBuilder:
         teacher_hint_hash: str,
     ) -> TeacherTargetRecord:
         action_hash = assistant_action_hash(teacher_action)
-        current_checkpoint = (
-            self.config.current_policy_checkpoint or self.config.policy.model
-        )
+        teacher_checkpoint = self.config.teacher_anchor_checkpoint
         key = (
-            current_checkpoint,
-            current_checkpoint,
+            teacher_checkpoint,
+            teacher_checkpoint,
             state_hash,
             action_hash,
             teacher_hint_hash,
@@ -411,19 +411,19 @@ class TeacherTargetBuilder:
         try:
             requests_to_score = {
                 "hinted": dict(
-                    endpoint=self.config.policy,
-                    checkpoint_id=current_checkpoint,
+                    endpoint=self.config.teacher,
+                    checkpoint_id=teacher_checkpoint,
                     state_hash=state_hash,
                     action_hash=action_hash,
-                    information_view="current_hinted",
+                    information_view="teacher_anchor_hinted",
                     messages=hinted_teacher_messages,
                 ),
                 "unhinted": dict(
-                    endpoint=self.config.policy,
-                    checkpoint_id=current_checkpoint,
+                    endpoint=self.config.teacher,
+                    checkpoint_id=teacher_checkpoint,
                     state_hash=state_hash,
                     action_hash=action_hash,
-                    information_view="current_unhinted",
+                    information_view="teacher_anchor_unhinted",
                     messages=student_visible_messages,
                 ),
             }
@@ -447,7 +447,7 @@ class TeacherTargetBuilder:
             )
             raw_hash = canonical_hash(
                 TeacherTargetRecord.raw_hash_payload(
-                    teacher_checkpoint=current_checkpoint,
+                    teacher_checkpoint=teacher_checkpoint,
                     teacher_hint_hash=teacher_hint_hash,
                     state_hash=state_hash,
                     teacher_action_hash=action_hash,
@@ -470,7 +470,7 @@ class TeacherTargetBuilder:
                 teacher_action_hash=action_hash,
                 raw_teacher_target_hash=raw_hash,
                 teacher_target_hash=target_hash,
-                teacher_checkpoint=current_checkpoint,
+                teacher_checkpoint=teacher_checkpoint,
                 teacher_hint_hash=teacher_hint_hash,
                 student_visible_messages=tuple(deepcopy(student_visible_messages)),
                 hinted_teacher_messages=tuple(deepcopy(hinted_teacher_messages)),
@@ -480,7 +480,7 @@ class TeacherTargetBuilder:
                 hinted_topk_logprobs=hinted.topk_logprobs,
                 hinted_topk_token_ids=hinted.topk_token_ids,
                 hinted_support_mass=hinted.support_mass,
-                unhinted_reference_checkpoint=current_checkpoint,
+                unhinted_reference_checkpoint=teacher_checkpoint,
                 unhinted_reference_topk_logprobs=unhinted.topk_logprobs,
                 unhinted_reference_topk_token_ids=unhinted.topk_token_ids,
                 unhinted_reference_support_mass=unhinted.support_mass,
@@ -504,7 +504,7 @@ class TeacherTargetBuilder:
 
 
 class StageGapScorer:
-    """Score one canonical sharpened target under previous/current Students."""
+    """Score an S_k+skill target under unhinted S_k and S_(k+1)."""
 
     def __init__(
         self,
@@ -524,6 +524,15 @@ class StageGapScorer:
             raise ValueError("Buyer stage scoring requires both checkpoint identities")
         if previous == current:
             raise ValueError("previous and current checkpoints must be distinct")
+        if self.config.teacher_anchor != "previous":
+            raise ValueError(
+                "Buyer stage scoring requires teacher_anchor='previous' so the "
+                "Teacher target remains fixed at S_k+skill"
+            )
+        if self.config.teacher_anchor_checkpoint != previous:
+            raise ValueError(
+                "Teacher anchor checkpoint must equal the previous Student checkpoint"
+            )
 
     def score(
         self,
@@ -534,7 +543,8 @@ class StageGapScorer:
         state_hash: str,
         teacher_hint_hash: str,
     ) -> StageGapScore:
-        if self.config.previous_policy is None:
+        self.validate_checkpoint_pair()
+        if self.config.previous_policy is None:  # guarded above
             raise ValueError("previous-policy endpoint is not configured")
         record = self.target_builder.build(
             student_visible_messages=student_visible_messages,
@@ -550,21 +560,25 @@ class StageGapScorer:
         current_checkpoint = (
             self.config.current_policy_checkpoint or self.config.policy.model
         )
-        previous = self.target_builder.score_view(
-            endpoint=self.config.previous_policy,
-            checkpoint_id=previous_checkpoint,
+        if record.teacher_checkpoint != previous_checkpoint:
+            raise ValueError(
+                "Teacher target must be anchored to the previous Student checkpoint"
+            )
+        current = self.target_builder.score_view(
+            endpoint=self.config.policy,
+            checkpoint_id=current_checkpoint,
             state_hash=state_hash,
             action_hash=record.teacher_action_hash,
-            information_view="previous_unhinted",
+            information_view="current_unhinted_against_previous_teacher",
             messages=student_visible_messages,
         )
-        if previous.target_input_ids != record.target_token_ids:
-            raise ValueError("previous Student target token IDs do not align")
+        if current.target_input_ids != record.target_token_ids:
+            raise ValueError("current Student target token IDs do not align")
         previous_gap = mean_forward_kl(
             teacher_logprobs=record.sharpened_topk_logprobs,
             teacher_token_ids=record.sharpened_topk_token_ids,
-            student_logprobs=previous.topk_logprobs,
-            student_token_ids=previous.topk_token_ids,
+            student_logprobs=record.unhinted_reference_topk_logprobs,
+            student_token_ids=record.unhinted_reference_topk_token_ids,
             target_token_ids=record.target_token_ids,
             target_loss_mask=record.target_loss_mask,
             epsilon=self.config.teacher_gap_eps,
@@ -572,8 +586,8 @@ class StageGapScorer:
         current_gap = mean_forward_kl(
             teacher_logprobs=record.sharpened_topk_logprobs,
             teacher_token_ids=record.sharpened_topk_token_ids,
-            student_logprobs=record.unhinted_reference_topk_logprobs,
-            student_token_ids=record.unhinted_reference_topk_token_ids,
+            student_logprobs=current.topk_logprobs,
+            student_token_ids=current.topk_token_ids,
             target_token_ids=record.target_token_ids,
             target_loss_mask=record.target_loss_mask,
             epsilon=self.config.teacher_gap_eps,
@@ -584,8 +598,9 @@ class StageGapScorer:
         )
         return StageGapScore(
             teacher_target=record,
-            previous_view=previous,
+            current_view=current,
             progress=progress,
+            checkpoint_teacher_anchor=record.teacher_checkpoint,
             checkpoint_previous=previous_checkpoint,
             checkpoint_current=current_checkpoint,
         )

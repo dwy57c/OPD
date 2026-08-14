@@ -28,7 +28,7 @@ fi
 TRAINER_ARGS=(
   --rlhf_type gkd \
   --model "${COEVO_POLICY_BASE_MODEL:-$COEVO_POLICY_PATH}" \
-  --model_type "${COEVO_MODEL_TYPE:-qwen3}" \
+  --model_type "${COEVO_POLICY_MODEL_TYPE:-${COEVO_MODEL_TYPE:-qwen3}}" \
   --template "${COEVO_TEMPLATE_TYPE:-qwen3_nothinking}" \
   --teacher_model_server "${COEVO_POLICY_URL:-http://127.0.0.1:${COEVO_POLICY_PORT:-8000}}" \
   --gkd_logits_topk "${COEVO_TEACHER_GAP_TOPK:-20}" \

@@ -143,6 +143,7 @@ def test_three_view_scorer_reuses_one_sharpened_target_and_cache():
         previous_policy=ModelEndpoint("previous", "http://previous"),
         buyer_reference=ModelEndpoint("buyer", "http://buyer"),
         teacher_hint_mode="none",
+        teacher_anchor="previous",
         current_policy_checkpoint="current-checkpoint",
         previous_policy_checkpoint="previous-checkpoint",
         teacher_gap_min_support_mass=0.9,
@@ -175,6 +176,8 @@ def test_three_view_scorer_reuses_one_sharpened_target_and_cache():
 
     assert first.progress.learning_progress > 0
     assert first.progress.decision_reward > 0
+    assert first.teacher_target.teacher_checkpoint == "previous-checkpoint"
+    assert first.checkpoint_teacher_anchor == "previous-checkpoint"
     assert first.teacher_target.teacher_target_hash == (
         second.teacher_target.teacher_target_hash
     )
@@ -182,3 +185,20 @@ def test_three_view_scorer_reuses_one_sharpened_target_and_cache():
         first.to_dict()["teacher_target_hash"]
     )
     assert len(client.calls) == 3
+    assert sum(model == "previous" for model, _ in client.calls) == 2
+    assert sum(model == "current" for model, _ in client.calls) == 1
+
+
+def test_stage_scorer_rejects_a_moving_current_teacher_anchor():
+    config = InfraConfig(
+        policy=ModelEndpoint("current", "http://current"),
+        previous_policy=ModelEndpoint("previous", "http://previous"),
+        buyer_reference=ModelEndpoint("buyer", "http://buyer"),
+        teacher_hint_mode="none",
+        teacher_anchor="current",
+        current_policy_checkpoint="current-checkpoint",
+        previous_policy_checkpoint="previous-checkpoint",
+    )
+
+    with pytest.raises(ValueError, match="teacher_anchor='previous'"):
+        StageGapScorer(config, target_builder=object()).validate_checkpoint_pair()

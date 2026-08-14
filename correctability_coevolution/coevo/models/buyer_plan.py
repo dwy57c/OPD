@@ -6,23 +6,22 @@ from typing import Any
 from json_repair import repair_json
 
 
-BUYER_ACTIONS = frozenset(
-    {
-        "answer_normally",
-        "reveal_hidden_constraint",
-        "withhold_information",
-        "clarify_previous_statement",
-        "challenge_student_assumption",
-        "request_alternative",
-        "accept_proposal",
-        "reject_proposal",
-        "confirm_action",
-        "execute_user_tool",
-        "ask_about_cost",
-        "ask_about_policy",
-        "stop",
-    }
-)
+BUYER_ACTION_PAYLOAD_FIELDS = {
+    "answer_normally": ("answer",),
+    "reveal_hidden_constraint": ("constraint",),
+    "withhold_information": (),
+    "clarify_previous_statement": ("clarification",),
+    "challenge_student_assumption": ("assumption",),
+    "request_alternative": ("criteria",),
+    "accept_proposal": (),
+    "reject_proposal": ("reason",),
+    "confirm_action": ("action",),
+    "execute_user_tool": ("tool_name", "arguments"),
+    "ask_about_cost": (),
+    "ask_about_policy": (),
+    "stop": ("stop_reason",),
+}
+BUYER_ACTIONS = frozenset(BUYER_ACTION_PAYLOAD_FIELDS)
 
 FAILURE_TYPES = frozenset(
     {
@@ -181,6 +180,22 @@ class BuyerPlan:
         actions = ", ".join(sorted(BUYER_ACTIONS))
         failures = ", ".join(sorted(FAILURE_TYPES))
         tools = ", ".join(sorted(tool_names)) or "none"
+        payload_contract = "; ".join(
+            f'{action} -> '
+            + json.dumps(
+                {
+                    field: (
+                        {}
+                        if field == "arguments"
+                        else f"<{field}>"
+                    )
+                    for field in fields
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            for action, fields in BUYER_ACTION_PAYLOAD_FIELDS.items()
+        )
         return (
             f"{reference_prompt}\n\n"
             "You are the private Buyer Planner. Return exactly one JSON object and no "
@@ -192,8 +207,23 @@ class BuyerPlan:
             f"Allowed next_move values: {actions}.\n"
             f"Allowed failure_type values: {failures}.\n"
             f"Available user tools: {tools}.\n"
-            "For execute_user_tool, payload must contain tool_name and arguments. "
-            "For stop, payload must contain stop_reason."
+            "Payload must use exactly the listed keys and no others: "
+            f"{payload_contract}.\n"
+            "target_skill names the Student capability you want to probe; next_move "
+            "names the literal public user behavior to render. Do not copy "
+            "target_skill into next_move unless that is literally the user's next "
+            "behavior. For an initial customer request or an ordinary natural-language "
+            "reply, use next_move=answer_normally and put the full utterance only in "
+            "payload.answer. ask_about_cost and ask_about_policy are fixed generic "
+            "follow-up actions and therefore require an empty payload. Never place the "
+            "answer key under any action other than answer_normally.\n"
+            "Example initial request: "
+            '{"diagnosis":{"failure_type":"none","evidence_turns":[]},'
+            '"target_skill":"constraint_tracking","next_move":"answer_normally",'
+            '"payload":{"answer":"I need help with my reservation."},'
+            '"predicted_learning_progress":0.1,"stop":false}.\n'
+            "Allowed stop_reason values: task_complete, scenario_requires_stop, "
+            "user_abandoned, environment_blocked."
         )
 
 

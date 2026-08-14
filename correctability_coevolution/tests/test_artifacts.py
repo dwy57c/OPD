@@ -14,7 +14,7 @@ def contract(**overrides):
         "tokenizer_hash": "tokenizer-hash",
         "teacher_target_version": "skill-contrast-sharpened-v2",
         "reward_name": "tau2_stage_learning_progress",
-        "reward_formula_version": "positive-stage-learning-progress-v2",
+        "reward_formula_version": "previous-skill-anchor-progress-v3",
         "student_checkpoint_current": "/checkpoints/current",
         "student_checkpoint_previous": "/checkpoints/previous",
         "buyer_checkpoint": "/checkpoints/buyer",

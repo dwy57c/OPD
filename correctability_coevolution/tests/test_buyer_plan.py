@@ -26,6 +26,17 @@ def test_buyer_plan_schema_is_strict_and_stop_is_consistent():
         plan(next_move="stop", payload={"stop_reason": "task_complete"})
 
 
+def test_planner_prompt_exposes_exact_renderer_payload_contract():
+    prompt = BuyerPlan.planner_system_prompt("reference")
+    assert 'answer_normally -> {"answer":"<answer>"}' in prompt
+    assert "ask_about_policy -> {}" in prompt
+    assert 'execute_user_tool -> {"tool_name":"<tool_name>","arguments":{}}' in prompt
+    assert "target_skill names the Student capability" in prompt
+    assert "next_move=answer_normally" in prompt
+    assert "Never place the answer key" in prompt
+    assert "Allowed stop_reason values: task_complete" in prompt
+
+
 def test_frozen_renderer_maps_plan_without_exposing_diagnosis():
     private = plan(
         next_move="reveal_hidden_constraint",

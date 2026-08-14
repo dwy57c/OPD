@@ -22,7 +22,9 @@ if [[ -n ${COEVO_PREVIOUS_POLICY_PATH:-} ]]; then
 fi
 "$COEVO_ROOT/scripts/start_role.sh" buyer "$COEVO_BUYER_PATH"
 started+=(buyer)
-"$COEVO_ROOT/scripts/start_role.sh" rollout "$COEVO_BUYER_PATH"
-started+=(rollout)
+if [[ ${COEVO_START_ROLLOUT:-true} == true ]]; then
+  "$COEVO_ROOT/scripts/start_role.sh" rollout "$COEVO_BUYER_PATH"
+  started+=(rollout)
+fi
 
 trap - ERR INT TERM

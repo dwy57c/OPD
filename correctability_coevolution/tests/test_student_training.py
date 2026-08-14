@@ -14,8 +14,10 @@ from coevo.scoring.teacher_target import TeacherTargetRecord
 from coevo.training.gated_gkd import (
     NaturalDecisionStudentTrainer,
     cached_target_distillation,
+    mask_only_cached_target,
     validate_student_training_row,
 )
+from coevo.rollout.views import swift_cached_target_messages, swift_training_messages
 
 
 def target_record(action=None):
@@ -99,7 +101,10 @@ def training_row(action=None):
     target = target_record(action)
     return {
         "schema_version": 4,
-        "messages": list(target.student_visible_messages),
+        "messages": swift_cached_target_messages(
+            list(target.student_visible_messages)
+        ),
+        "response_token_ids": list(target.target_token_ids),
         "training_target": "skill_contrast_teacher_distill",
         "teacher_target_record": target.to_dict(),
         "teacher_target_hash": target.teacher_target_hash,
@@ -141,6 +146,84 @@ def training_row(action=None):
 )
 def test_schema_v4_accepts_complete_text_and_tool_targets(action):
     validate_student_training_row(training_row(action))
+
+
+def test_swift_tool_target_survives_message_key_stripping():
+    row = training_row(
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "ignored-by-tokenizer",
+                    "type": "function",
+                    "function": {
+                        "name": "lookup",
+                        "arguments": '{"user_id":"abc"}',
+                    },
+                }
+            ],
+        }
+    )
+    assert row["messages"][-1] == {
+        "role": "assistant",
+        "content": "<cached_teacher_action>",
+    }
+    assert row["response_token_ids"] == [11, 12]
+    validate_student_training_row(row)
+
+
+def test_openai_tool_call_conversion_preserves_function_and_arguments():
+    rows = swift_training_messages(
+        [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "ignored-by-tokenizer",
+                        "type": "function",
+                        "function": {
+                            "name": "lookup",
+                            "arguments": '{"user_id":"abc"}',
+                        },
+                    }
+                ],
+            }
+        ]
+    )
+    assert rows == [
+        {
+            "role": "tool_call",
+            "content": '{"name":"lookup","arguments":{"user_id":"abc"}}',
+        }
+    ]
+
+
+def test_changed_response_token_ids_are_rejected():
+    row = training_row()
+    row["response_token_ids"][0] += 1
+    with pytest.raises(ValueError, match="frozen Teacher target tokens"):
+        validate_student_training_row(row)
+
+
+def test_only_final_exact_cached_target_span_is_loss_bearing():
+    target = target_record()
+    input_ids = torch.tensor([[11, 12, 7, 11, 12, 9]])
+    labels = mask_only_cached_target(input_ids, [target])
+    assert labels.tolist() == [[-100, -100, -100, 11, 12, -100]]
+
+
+def test_missing_cached_target_span_fails_closed():
+    with pytest.raises(ValueError, match="absent from the encoded sequence"):
+        mask_only_cached_target(torch.tensor([[1, 2, 3]]), [target_record()])
+
+
+def test_arrow_loss_metadata_does_not_change_teacher_action_identity():
+    row = training_row()
+    for message in row["messages"]:
+        message["loss"] = None
+    validate_student_training_row(row)
 
 
 def test_legacy_student_dataset_fails_with_actionable_version_error():

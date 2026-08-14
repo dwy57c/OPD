@@ -82,8 +82,15 @@ case "$ROLE" in
         --vllm_max_lora_rank "${COEVO_BUYER_LORA_RANK:-16}"
       )
     fi
+    # Swift silently advances to the next port when the requested socket is
+    # still busy (including a just-stopped server).  The controller would then
+    # wait on the wrong port, so require the configured port to be bindable
+    # before launch.
+    python "$COEVO_ROOT/scripts/wait_for_free_port.py" "$PORT" \
+      --timeout "${COEVO_PORT_RELEASE_TIMEOUT:-60}"
     CUDA_VISIBLE_DEVICES="$GPU" nohup setsid python -m swift.cli.rollout \
-      --model "$MODEL_PATH" --model_type "${COEVO_MODEL_TYPE:-qwen3}" \
+      --model "$MODEL_PATH" \
+      --model_type "${COEVO_BUYER_MODEL_TYPE:-${COEVO_MODEL_TYPE:-qwen3}}" \
       --template "${COEVO_BUYER_TEMPLATE_TYPE:-qwen3}" \
       --enable_thinking "${COEVO_BUYER_ENABLE_THINKING:-true}" \
       --served_model_name "$SERVED_MODEL" --port "$PORT" \

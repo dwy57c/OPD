@@ -27,6 +27,11 @@ def test_buyer_training_uses_group_reward_normalization():
         text = (root / "scripts" / name).read_text()
         assert "--scale_rewards group" in text
         assert "--scale_rewards none" not in text
+        assert "COEVO_BUYER_BETA:-0.01" in text
+        assert "COEVO_BUYER_ATTN_IMPL:-flash_attn" in text
+        assert '--attn_impl "$BUYER_ATTN_IMPL"' in text
+        assert "--logging_nan_inf_filter false" in text
+        assert "check_adapter_finite.py" in text
 
 
 def test_main_reward_and_scheduler_do_not_use_extra_curriculum_terms():

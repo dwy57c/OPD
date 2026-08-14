@@ -4,7 +4,7 @@ from typing import Sequence
 
 
 REWARD_NAME = "tau2_stage_learning_progress"
-REWARD_FORMULA_VERSION = "positive-stage-learning-progress-v2"
+REWARD_FORMULA_VERSION = "previous-skill-anchor-progress-v3"
 
 
 @dataclass(frozen=True)
