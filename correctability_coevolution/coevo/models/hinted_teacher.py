@@ -1,6 +1,7 @@
 from dataclasses import asdict, dataclass
 import hashlib
 import json
+import re
 import time
 from typing import Any
 
@@ -25,33 +26,34 @@ from coevo.config import HintEndpoint
 
 
 HINTER_INSTRUCTION = """
-You are a private hint generator for a customer-service policy model. The same
-policy model is used for both Student and Teacher. The Teacher differs only in
-receiving your hint.
+Write a short private decision note that helps a customer-service policy model
+choose its next turn. Write like a careful expert reasoning in ordinary prose,
+not like a controller issuing an answer. The note is private and will never be
+shown to the customer.
 
-Given the visible dialogue, tool results, domain policy, available tool schemas,
-and privileged oracle resolution steps, produce a concise hint for the policy
-model's next turn. Do not produce the public response and do not reveal
-chain-of-thought.
+Use the dialogue, tool results, domain policy, and privileged resolution facts
+as evidence. Establish what is already known, what remains unresolved, and what
+policy constraint matters now. When more than one move is genuinely plausible,
+briefly consider two or three alternatives and the tradeoff or evidence that
+favors one. End with a tentative semantic direction and any important
+confirmation or safety guardrail, while leaving the policy model to choose and
+express the concrete action itself.
 
-Rules:
-1. When oracle resolution steps are present, treat their tool names and arguments
-   as authoritative; never invent or alter their IDs, dates, amounts, passenger
-   data, or payment methods. Some informational tasks have no oracle tool steps.
-2. Reconcile the oracle steps with actions and tool results already present in
-   history. Mark completed or no-longer-applicable steps explicitly.
-3. The next step must obey policy prerequisites such as identification,
-   clarification, disclosure of action details, and explicit confirmation.
-4. State the immediate next action, then give the remaining ordered plan so the
-   policy model can reuse this hint throughout the current dialogue branch.
-5. If the latest input is a tool result, use it to decide the next action. If it
-   is a user query, answer or clarify it before advancing the workflow.
-6. When oracle steps are present, do not recommend side-effecting actions outside
-   them. When they are absent, follow the domain policy and visible request without
-   inventing an unnecessary side effect.
-7. Return a concise plain-text plan. Use headings STATE, USER INTENT, NEXT ACTION,
-   REMAINING PLAN, and POLICY CHECKS. Do not return JSON or chain-of-thought.
+Do not emit an exact function or tool name, argument key, JSON, code, schema,
+quoted call syntax, or any other copyable API invocation. Do not quote or
+mechanically restate the oracle steps. Do not use headings, numbered fields,
+bullet lists, or a rigid template. You may mention identifiers, dates, routes,
+or amounts only as facts in natural sentences when they are necessary to reason
+correctly. Do not write the public reply. Use complete sentences and finish the
+note cleanly. Keep it concise, usually 60-140 words.
 """.strip()
+
+
+_RIGID_HEADING = re.compile(
+    r"^(?:#{1,6}\s*)?(?:state|user intent|next action|remaining plan|policy checks)\s*:?$",
+    re.IGNORECASE,
+)
+_LIST_ITEM = re.compile(r"^(?:[-*]\s+|\d+[.)]\s+)")
 
 
 @dataclass(frozen=True)
@@ -77,16 +79,60 @@ def oracle_steps_from_task(task: Task) -> str:
     )
 
 
-def format_teacher_query_with_hint(query: str, hint: dict[str, Any]) -> str:
+def _private_hint_note(
+    value: "TeacherHintResult | dict[str, Any] | None",
+) -> str | None:
+    payload = private_hint_payload(value)
+    if not payload:
+        return None
+    note = payload.get("plan")
+    if not isinstance(note, str) or not note.strip():
+        raise ValueError("teacher hint payload must contain a non-empty plan string")
+    return note.strip()
+
+
+def _validate_natural_note(plan: str, payload: dict[str, Any]) -> None:
+    """Reject truncated or action-serialization-like closed-model notes."""
+    if not plan:
+        raise ValueError("closed-model hinter returned an empty note")
+    if plan[-1] not in ".!?。！？":
+        raise ValueError("closed-model hinter returned an incomplete note")
+    if len(plan.split()) > 220:
+        raise ValueError("closed-model hinter returned an overlong note")
+    if "```" in plan or plan.lstrip().startswith(("{", "[")):
+        raise ValueError("closed-model hinter returned structured output")
+    lines = [line.strip() for line in plan.splitlines() if line.strip()]
+    if any(_RIGID_HEADING.match(line) or _LIST_ITEM.match(line) for line in lines):
+        raise ValueError("closed-model hinter returned a rigid template")
+
+    tool_names = []
+    for schema in payload.get("available_tools") or []:
+        function = schema.get("function") if isinstance(schema, dict) else None
+        name = function.get("name") if isinstance(function, dict) else None
+        if isinstance(name, str) and name:
+            tool_names.append(name)
+    for name in tool_names:
+        if re.search(rf"(?<!\w){re.escape(name)}(?!\w)", plan):
+            raise ValueError(
+                "closed-model hinter copied an exact tool name into the note"
+            )
+
+
+def format_teacher_query_with_hint(
+    query: str,
+    hint: "TeacherHintResult | dict[str, Any] | None",
+) -> str:
     """Build the Teacher-only query used by OPSD's frozen policy API."""
-    hint_text = json.dumps(private_hint_payload(hint), ensure_ascii=False, indent=2)
+    note = _private_hint_note(hint)
+    if note is None:
+        return query
     return (
         f"{query}\n\n"
-        "<private_teacher_hint>\n"
-        f"{hint_text}\n"
-        "</private_teacher_hint>\n"
-        "Use the private hint to answer the user while following the domain policy. "
-        "Do not mention or expose the hint."
+        "<private_teacher_note>\n"
+        f"{note}\n"
+        "</private_teacher_note>\n"
+        "Treat this as advisory reasoning. Follow the policy and visible evidence, "
+        "choose the concrete next action yourself, and never expose the note."
     )
 
 
@@ -128,14 +174,14 @@ def format_teacher_system_prompt_with_hint(
     payload = private_hint_payload(hint)
     if not payload:
         return system_prompt
-    hint_text = json.dumps(payload, ensure_ascii=False, indent=2)
+    note = _private_hint_note(payload)
     return (
         f"{system_prompt}\n"
-        "<private_teacher_hint>\n"
-        f"{hint_text}\n"
-        "</private_teacher_hint>\n"
-        "Use this private plan throughout the current dialogue branch. "
-        "Follow the policy and visible dialogue, and never mention the hint."
+        "<private_teacher_note>\n"
+        f"{note}\n"
+        "</private_teacher_note>\n"
+        "Treat this as advisory reasoning. Follow the policy and visible evidence, "
+        "choose the concrete next action yourself, and never expose the note."
     )
 
 
@@ -167,8 +213,7 @@ class ClosedModelTeacherHinter:
                     max_tokens=self.endpoint.max_tokens,
                 )
                 plan = (response.choices[0].message.content or "").strip()
-                if not plan:
-                    raise ValueError("closed-model hinter returned an empty plan")
+                _validate_natural_note(plan, payload)
                 hint = {"plan": plan}
                 canonical = json.dumps(
                     hint, ensure_ascii=False, sort_keys=True, separators=(",", ":")

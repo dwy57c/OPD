@@ -128,7 +128,7 @@ class InfraConfig:
     round_index: int = 0
     dataset_schema_version: int = 4
     target_schema_version: int = 2
-    teacher_target_version: str = "skill-contrast-sharpened-v2"
+    teacher_target_version: str = "skill-contrast-natural-note-v3"
     tokenizer_id: str = ""
     current_policy_revision: str = ""
     previous_policy_revision: str = ""
@@ -292,7 +292,7 @@ class InfraConfig:
             ),
             target_schema_version=int(os.getenv("COEVO_TARGET_SCHEMA_VERSION", "2")),
             teacher_target_version=os.getenv(
-                "COEVO_TEACHER_TARGET_VERSION", "skill-contrast-sharpened-v2"
+                "COEVO_TEACHER_TARGET_VERSION", "skill-contrast-natural-note-v3"
             ),
             tokenizer_id=os.getenv(
                 "COEVO_TOKENIZER_ID",

@@ -13,6 +13,7 @@ if str(ROOT) not in sys.path:
 def main() -> None:
     from coevo.artifacts import artifact_metadata, canonical_hash, model_manifest_revision
     from coevo.config import InfraConfig, ModelEndpoint
+    from coevo.rollout.views import swift_on_policy_prompt_messages
     from coevo.scoring import TeacherTargetBuilder
 
     parser = argparse.ArgumentParser(
@@ -85,8 +86,8 @@ def main() -> None:
     )
     row = {
         **artifact_metadata(config),
-        "messages": ordinary,
-        "training_target": "skill_contrast_teacher_distill",
+        "messages": swift_on_policy_prompt_messages(ordinary),
+        "training_target": "natural_hint_on_policy_jsd",
         "teacher_target_record": target.to_dict(),
         "state_hash": state_hash,
         "teacher_action_hash": target.teacher_action_hash,
@@ -95,7 +96,7 @@ def main() -> None:
         "target_token_count": sum(target.target_loss_mask),
         "domain": "infra-smoke",
         "task_split": "synthetic",
-        "task_id": "cached-target-one-step",
+        "task_id": "on-policy-one-step",
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     temporary = args.output.with_suffix(args.output.suffix + ".tmp")

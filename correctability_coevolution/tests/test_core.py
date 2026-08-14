@@ -35,7 +35,10 @@ def test_unlimited_collector_materializes_every_natural_teacher_target():
         )
         task = SimpleNamespace(id="test")
         policies = SimpleNamespace(
-            student=lambda environment: SimpleNamespace(system_prompt="policy")
+            student=lambda environment: SimpleNamespace(
+                system_prompt="policy",
+                tools=[SimpleNamespace(openai_schema={"type": "function"})],
+            )
         )
 
         @staticmethod
@@ -81,6 +84,7 @@ def test_unlimited_collector_materializes_every_natural_teacher_target():
 
         @staticmethod
         def build(**kwargs):
+            assert kwargs["tool_schemas"] == [{"type": "function"}]
             return Target()
 
     record = NaturalDecisionCollector(
@@ -101,6 +105,7 @@ def test_invalid_target_is_preserved_for_audit_instead_of_training():
     collector = object.__new__(NaturalDecisionCollector)
     collector._target_builder = Builder()
     collector._student_system_prompt = "policy"
+    collector._student_tool_schemas = []
     collector.environment = SimpleNamespace()
     decision = {
         "state_hash": "state",

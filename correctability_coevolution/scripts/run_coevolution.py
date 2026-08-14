@@ -114,7 +114,7 @@ def validate_resume_manifest(
         "reward_formula_version": "previous-skill-anchor-progress-v3",
         "buyer_teacher_anchor": "previous",
         "teacher_target_version": env.get(
-            "COEVO_TEACHER_TARGET_VERSION", "skill-contrast-sharpened-v2"
+            "COEVO_TEACHER_TARGET_VERSION", "skill-contrast-natural-note-v3"
         ),
     }
     mismatches = {
@@ -295,7 +295,7 @@ def main() -> None:
             "dataset_schema_version": 4,
             "target_schema_version": 2,
             "teacher_target_version": round_env.get(
-                "COEVO_TEACHER_TARGET_VERSION", "skill-contrast-sharpened-v2"
+                "COEVO_TEACHER_TARGET_VERSION", "skill-contrast-natural-note-v3"
             ),
             "tokenizer_id": round_env.get(
                 "COEVO_TOKENIZER_ID",

@@ -1,4 +1,5 @@
 import asyncio
+from copy import deepcopy
 import os
 from dataclasses import replace
 from threading import Lock
@@ -251,6 +252,10 @@ class Tau2BuyerScheduler(MultiTurnScheduler):
             teacher_action=visible_messages[-1],
             state_hash=str(result["state_hash"]),
             teacher_hint_hash=canonical_hash(result.get("teacher_hint") or {}),
+            tool_schemas=[
+                deepcopy(tool.openai_schema)
+                for tool in (getattr(student, "tools", None) or [])
+            ],
         )
         return score.to_dict()
 

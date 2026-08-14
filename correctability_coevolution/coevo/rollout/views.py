@@ -107,3 +107,12 @@ def swift_cached_target_messages(messages: list[dict]) -> list[dict]:
     rows = swift_training_messages(messages[:-1])
     rows.append({"role": "assistant", "content": "<cached_teacher_action>"})
     return rows
+
+
+def swift_on_policy_prompt_messages(messages: list[dict]) -> list[dict]:
+    """Keep a reached decision state and reserve a fresh Student action turn."""
+    if not messages or messages[-1].get("role") != "assistant":
+        raise ValueError("on-policy decision trajectory must end in an assistant action")
+    rows = swift_training_messages(messages[:-1])
+    rows.append({"role": "assistant", "content": ""})
+    return rows

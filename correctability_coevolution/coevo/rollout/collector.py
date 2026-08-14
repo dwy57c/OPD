@@ -11,7 +11,7 @@ from coevo.models import format_teacher_system_prompt_with_hint
 from coevo.rollout.views import (
     buyer_view,
     student_view,
-    swift_cached_target_messages,
+    swift_on_policy_prompt_messages,
 )
 from coevo.scoring import (
     TeacherTargetBuilder,
@@ -80,6 +80,7 @@ class NaturalDecisionCollector:
                 teacher_action=visible_messages[-1],
                 state_hash=str(candidate["state_hash"]),
                 teacher_hint_hash=hint_hash,
+                tool_schemas=self._tool_schemas(),
             )
         except Exception as error:
             candidate.update(
@@ -166,12 +167,11 @@ class NaturalDecisionCollector:
             rows.append(
                 {
                     **artifact_metadata(self.environment.config),
-                    "messages": swift_cached_target_messages(
+                    "messages": swift_on_policy_prompt_messages(
                         deepcopy_messages(target.student_visible_messages)
                     ),
                     "tools": self._tool_schemas(),
-                    "response_token_ids": list(target.target_token_ids),
-                    "training_target": "skill_contrast_teacher_distill",
+                    "training_target": "natural_hint_on_policy_jsd",
                     "teacher_target_record": target.to_dict(),
                     "state_hash": target.state_hash,
                     "teacher_action_hash": target.teacher_action_hash,

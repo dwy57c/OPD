@@ -230,10 +230,19 @@ class TeacherTargetBuilder:
             "scoring_failures": self.scoring_failures,
         }
 
-    def tokenize_target(self, messages: list[dict]) -> TargetTokenization:
+    def tokenize_target(
+        self,
+        messages: list[dict],
+        tool_schemas: list[dict] | None = None,
+    ) -> TargetTokenization:
         if not messages or messages[-1].get("role") != "assistant":
             raise ValueError("policy scoring messages must end in an assistant target")
         kwargs = {"enable_thinking": False}
+        if tool_schemas:
+            # Qwen renders the available functions into the system turn.  The
+            # exact same schemas must therefore be present for both Teacher
+            # scoring and Swift's later cached-target tokenization.
+            kwargs["tools"] = deepcopy(tool_schemas)
         tool_target = bool(messages[-1].get("tool_calls"))
         try:
             full = self.tokenizer.apply_chat_template(
@@ -249,16 +258,34 @@ class TeacherTargetBuilder:
             prefix = self.tokenizer.apply_chat_template(
                 messages[:-1], tokenize=True, add_generation_prompt=True, **kwargs
             )
-        except TypeError:
-            full = self.tokenizer.apply_chat_template(
-                messages,
-                tokenize=True,
-                add_generation_prompt=False,
-                continue_final_message=not tool_target,
-            )
-            prefix = self.tokenizer.apply_chat_template(
-                messages[:-1], tokenize=True, add_generation_prompt=True
-            )
+        except TypeError as error:
+            # Older tokenizer implementations may not expose Qwen's
+            # enable_thinking extension.  Retrying without that flag is safe;
+            # silently dropping tools is not, because it changes the sequence
+            # whose logits are distilled.
+            fallback_kwargs = dict(kwargs)
+            fallback_kwargs.pop("enable_thinking", None)
+            try:
+                full = self.tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=True,
+                    add_generation_prompt=False,
+                    continue_final_message=not tool_target,
+                    **fallback_kwargs,
+                )
+                prefix = self.tokenizer.apply_chat_template(
+                    messages[:-1],
+                    tokenize=True,
+                    add_generation_prompt=True,
+                    **fallback_kwargs,
+                )
+            except TypeError:
+                if tool_schemas:
+                    raise TypeError(
+                        "policy tokenizer must support tool schemas for "
+                        "tools-aware Teacher scoring"
+                    ) from error
+                raise
         full = self._input_ids(full)
         prefix = self._input_ids(prefix)
         full_ids = tuple(int(item) for item in full)
@@ -361,19 +388,22 @@ class TeacherTargetBuilder:
         action_hash: str,
         information_view: str,
         messages: list[dict],
+        tool_schemas: list[dict] | None = None,
     ) -> SparseTargetView:
+        tool_schema_hash = canonical_hash(tool_schemas or [])
         key = (
             checkpoint_id,
             state_hash,
             action_hash,
             information_view,
             self._tokenizer_hash,
+            tool_schema_hash,
         )
         with self._lock:
             cached = self._view_cache.get(key)
         if cached is not None:
             return cached
-        tokenized = self.tokenize_target(messages)
+        tokenized = self.tokenize_target(messages, tool_schemas)
         logprobs, token_ids = self.client.fetch(endpoint, tokenized.full_input_ids)
         result = self._slice_view(tokenized, logprobs, token_ids)
         with self._lock:
@@ -388,6 +418,7 @@ class TeacherTargetBuilder:
         teacher_action: dict,
         state_hash: str,
         teacher_hint_hash: str,
+        tool_schemas: list[dict] | None = None,
     ) -> TeacherTargetRecord:
         action_hash = assistant_action_hash(teacher_action)
         teacher_checkpoint = self.config.teacher_anchor_checkpoint
@@ -398,6 +429,7 @@ class TeacherTargetBuilder:
             action_hash,
             teacher_hint_hash,
             self._tokenizer_hash,
+            canonical_hash(tool_schemas or []),
             self._gate_config_hash,
         )
         with self._lock:
@@ -417,6 +449,7 @@ class TeacherTargetBuilder:
                     action_hash=action_hash,
                     information_view="teacher_anchor_hinted",
                     messages=hinted_teacher_messages,
+                    tool_schemas=tool_schemas,
                 ),
                 "unhinted": dict(
                     endpoint=self.config.teacher,
@@ -425,6 +458,7 @@ class TeacherTargetBuilder:
                     action_hash=action_hash,
                     information_view="teacher_anchor_unhinted",
                     messages=student_visible_messages,
+                    tool_schemas=tool_schemas,
                 ),
             }
             with ThreadPoolExecutor(max_workers=2) as executor:
@@ -542,6 +576,7 @@ class StageGapScorer:
         teacher_action: dict,
         state_hash: str,
         teacher_hint_hash: str,
+        tool_schemas: list[dict] | None = None,
     ) -> StageGapScore:
         self.validate_checkpoint_pair()
         if self.config.previous_policy is None:  # guarded above
@@ -552,6 +587,7 @@ class StageGapScorer:
             teacher_action=teacher_action,
             state_hash=state_hash,
             teacher_hint_hash=teacher_hint_hash,
+            tool_schemas=tool_schemas,
         )
         previous_checkpoint = (
             self.config.previous_policy_checkpoint
@@ -571,6 +607,7 @@ class StageGapScorer:
             action_hash=record.teacher_action_hash,
             information_view="current_unhinted_against_previous_teacher",
             messages=student_visible_messages,
+            tool_schemas=tool_schemas,
         )
         if current.target_input_ids != record.target_token_ids:
             raise ValueError("current Student target token IDs do not align")

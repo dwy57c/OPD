@@ -87,10 +87,12 @@ class FakeClient:
 
 class FakeToolTokenizer:
     chat_template = "fake-tool-v1"
+    seen_tools = []
 
     @staticmethod
     def apply_chat_template(messages, *, tokenize, add_generation_prompt, **kwargs):
         assert tokenize is True
+        FakeToolTokenizer.seen_tools.append(kwargs.get("tools"))
         prefix = [1, 2]
         if add_generation_prompt:
             return prefix
@@ -115,6 +117,17 @@ def test_tool_call_target_keeps_macro_action_and_strips_only_turn_terminator():
         tokenizer=FakeToolTokenizer(),
         client=FakeClient(),
     )
+    tool_schemas = [
+        {
+            "type": "function",
+            "function": {
+                "name": "lookup",
+                "description": "Look up a record.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+    ]
+    FakeToolTokenizer.seen_tools.clear()
     tokenized = builder.tokenize_target(
         [
             {"role": "system", "content": "policy"},
@@ -130,11 +143,13 @@ def test_tool_call_target_keeps_macro_action_and_strips_only_turn_terminator():
                     }
                 ],
             },
-        ]
+        ],
+        tool_schemas=tool_schemas,
     )
 
     assert tokenized.full_input_ids == (1, 2, 3, 4)
     assert tokenized.target_input_ids == (3, 4)
+    assert FakeToolTokenizer.seen_tools == [tool_schemas, tool_schemas]
 
 
 def test_three_view_scorer_reuses_one_sharpened_target_and_cache():

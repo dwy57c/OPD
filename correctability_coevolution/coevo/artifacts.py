@@ -134,7 +134,7 @@ def artifact_metadata(config) -> dict:
             getattr(
                 config,
                 "teacher_target_version",
-                "skill-contrast-sharpened-v2",
+                "skill-contrast-natural-note-v3",
             )
         ),
         reward_name=REWARD_NAME,

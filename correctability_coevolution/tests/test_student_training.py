@@ -1,9 +1,7 @@
 from copy import deepcopy
-from types import MethodType, SimpleNamespace
 import math
 
 import pytest
-import torch
 
 from coevo.artifacts import assistant_action_hash, canonical_hash
 from coevo.scoring.skill_contrast import (
@@ -13,11 +11,12 @@ from coevo.scoring.skill_contrast import (
 from coevo.scoring.teacher_target import TeacherTargetRecord
 from coevo.training.gated_gkd import (
     NaturalDecisionStudentTrainer,
-    cached_target_distillation,
-    mask_only_cached_target,
     validate_student_training_row,
 )
-from coevo.rollout.views import swift_cached_target_messages, swift_training_messages
+from coevo.rollout.views import (
+    swift_on_policy_prompt_messages,
+    swift_training_messages,
+)
 
 
 def target_record(action=None):
@@ -101,11 +100,10 @@ def training_row(action=None):
     target = target_record(action)
     return {
         "schema_version": 4,
-        "messages": swift_cached_target_messages(
+        "messages": swift_on_policy_prompt_messages(
             list(target.student_visible_messages)
         ),
-        "response_token_ids": list(target.target_token_ids),
-        "training_target": "skill_contrast_teacher_distill",
+        "training_target": "natural_hint_on_policy_jsd",
         "teacher_target_record": target.to_dict(),
         "teacher_target_hash": target.teacher_target_hash,
     }
@@ -144,11 +142,11 @@ def training_row(action=None):
         },
     ],
 )
-def test_schema_v4_accepts_complete_text_and_tool_targets(action):
+def test_schema_v4_accepts_decision_states_with_text_and_tool_references(action):
     validate_student_training_row(training_row(action))
 
 
-def test_swift_tool_target_survives_message_key_stripping():
+def test_reference_tool_action_is_not_copied_into_on_policy_prompt():
     row = training_row(
         {
             "role": "assistant",
@@ -167,9 +165,9 @@ def test_swift_tool_target_survives_message_key_stripping():
     )
     assert row["messages"][-1] == {
         "role": "assistant",
-        "content": "<cached_teacher_action>",
+        "content": "",
     }
-    assert row["response_token_ids"] == [11, 12]
+    assert "response_token_ids" not in row
     validate_student_training_row(row)
 
 
@@ -200,23 +198,11 @@ def test_openai_tool_call_conversion_preserves_function_and_arguments():
     ]
 
 
-def test_changed_response_token_ids_are_rejected():
+def test_precomputed_response_token_ids_are_rejected():
     row = training_row()
-    row["response_token_ids"][0] += 1
-    with pytest.raises(ValueError, match="frozen Teacher target tokens"):
+    row["response_token_ids"] = [11, 12]
+    with pytest.raises(ValueError, match="must not contain"):
         validate_student_training_row(row)
-
-
-def test_only_final_exact_cached_target_span_is_loss_bearing():
-    target = target_record()
-    input_ids = torch.tensor([[11, 12, 7, 11, 12, 9]])
-    labels = mask_only_cached_target(input_ids, [target])
-    assert labels.tolist() == [[-100, -100, -100, 11, 12, -100]]
-
-
-def test_missing_cached_target_span_fails_closed():
-    with pytest.raises(ValueError, match="absent from the encoded sequence"):
-        mask_only_cached_target(torch.tensor([[1, 2, 3]]), [target_record()])
 
 
 def test_arrow_loss_metadata_does_not_change_teacher_action_identity():
@@ -233,49 +219,18 @@ def test_legacy_student_dataset_fails_with_actionable_version_error():
         validate_student_training_row(row)
 
 
-def test_cached_target_is_loaded_before_optimization():
+def test_teacher_view_uses_private_hint_but_excludes_reference_action():
     trainer = object.__new__(NaturalDecisionStudentTrainer)
+    teacher_rows = trainer._build_opsd_teacher_data([training_row()])
 
-    def fake_prepare(self, rows, encode_prompt_only=False):
-        return {
-            "input_ids": torch.tensor([[1, 2, 11, 12]]),
-            "attention_mask": torch.ones(1, 4, dtype=torch.long),
-            "labels": torch.tensor([[-100, -100, 11, 12]]),
-        }
+    assert len(teacher_rows) == 1
+    messages = teacher_rows[0]["messages"]
+    assert "private_teacher_hint" in messages[0]["content"]
+    assert messages[-1] == {"role": "user", "content": "Cancel it."}
+    assert all(message.get("content") != "Please confirm." for message in messages)
 
-    # Patch the base-class call site through the instance-visible method used by
-    # the regression test, without contacting any Teacher endpoint.
+
+def test_trainer_inherits_ms_swift_on_policy_training_step():
     from swift.rlhf_trainers import GKDTrainer
 
-    original = GKDTrainer._prepare_batch_inputs
-    GKDTrainer._prepare_batch_inputs = fake_prepare
-    try:
-        encoded = trainer._prepare_cached_target_inputs([training_row()])
-    finally:
-        GKDTrainer._prepare_batch_inputs = original
-
-    assert len(encoded["_teacher_target_records"]) == 1
-    assert encoded["_teacher_target_records"][0].teacher_target_hash
-
-
-def test_student_loss_is_finite_unweighted_and_has_target_gradients():
-    target = target_record()
-    logits = torch.zeros(2, 20, requires_grad=True)
-    loss, metrics = cached_target_distillation(logits, target)
-    loss.backward()
-
-    assert torch.isfinite(loss)
-    assert loss.item() > 0
-    assert logits.grad is not None
-    assert logits.grad.abs().sum().item() > 0
-    assert metrics["skill_gate_mean"].item() > 0
-
-
-def test_closed_target_returns_graph_connected_zero():
-    logits = torch.randn(2, 20, requires_grad=True)
-    target = SimpleNamespace(target_token_ids=(11, 12), target_loss_mask=(0, 0))
-    loss, _ = cached_target_distillation(logits, target)
-    loss.backward()
-    assert loss.item() == 0.0
-    assert logits.grad is not None
-    assert logits.grad.abs().sum().item() == 0.0
+    assert NaturalDecisionStudentTrainer.training_step is GKDTrainer.training_step

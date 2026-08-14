@@ -6,6 +6,7 @@ from coevo.models import hinted_teacher as hinted_module
 from coevo.models.hinted_teacher import (
     HintedTeacherAgent,
     TeacherHintResult,
+    _validate_natural_note,
     format_teacher_system_prompt_with_hint,
 )
 
@@ -17,14 +18,10 @@ class FakeHinter:
     def hint(self, payload):
         self.payloads.append(payload)
         return TeacherHintResult(
-            hint={
-                "current_state": "Need the user's confirmation.",
-                "latest_user_intent": "Cancel the reservation.",
-                "completed_or_obsolete_steps": [],
-                "next_step": "Ask for explicit confirmation.",
-                "remaining_steps": ["Call the oracle cancellation tool."],
-                "policy_checks": ["Do not mutate data before confirmation."],
-            },
+            hint={"plan": "The requested cancellation is ready, but changing the "
+            "reservation requires the user's explicit confirmation. Asking for that "
+            "confirmation is the safest next direction; no booking data should change "
+            "until the user clearly agrees."},
             model="gemini-3.1-pro-preview",
             latency_ms=12,
             sha256="abc123",
@@ -78,8 +75,9 @@ def test_teacher_is_shared_policy_with_private_hint_only(monkeypatch):
         "Please cancel reservation ABC123."
     )
     system = captured["messages"][0].content
-    assert "<private_teacher_hint>" in system
-    assert "Ask for explicit confirmation." in system
+    assert "<private_teacher_note>" in system
+    assert "explicit confirmation" in system
+    assert '"plan"' not in system
     assert "<oracle_reference>" not in system
     assert "<resolution_steps>" not in system
     assert agent.hint_records[0]["latency_ms"] == 12
@@ -138,6 +136,34 @@ def test_privileged_prompt_excludes_hint_audit_metadata_and_null_hint():
     assert "audit-only-model" not in prompt
     assert "latency_ms" not in prompt
     assert "audit-only-hash" not in prompt
+    assert "<private_teacher_note>" in prompt
+    assert '"plan"' not in prompt
     assert format_teacher_system_prompt_with_hint(
         "policy", {"hint": None, "model": "audit-only-model"}
     ) == "policy"
+
+
+def test_natural_note_validation_rejects_tool_names_and_truncation():
+    payload = {
+        "available_tools": [
+            {"type": "function", "function": {"name": "cancel_reservation"}}
+        ]
+    }
+
+    _validate_natural_note(
+        "The reservation is eligible, but explicit confirmation is still missing. "
+        "The safest direction is to ask the user to confirm before changing it.",
+        payload,
+    )
+
+    for invalid in (
+        "Call cancel_reservation after confirmation.",
+        "The reservation is eligible, but confirmation is still",
+        "NEXT ACTION\nAsk for confirmation.",
+    ):
+        try:
+            _validate_natural_note(invalid, payload)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"invalid natural note was accepted: {invalid}")
