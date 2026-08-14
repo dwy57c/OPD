@@ -86,6 +86,43 @@ def test_teacher_is_shared_policy_with_private_hint_only(monkeypatch):
     assert len(hinter.payloads) == 1
 
 
+def test_teacher_can_refresh_private_hint_each_turn(monkeypatch):
+    task = get_tasks("airline", task_split_name="train", task_ids=["1"])[0]
+    hinter = FakeHinter()
+    endpoint = HintEndpoint("gemini-3.1-pro-preview", "http://hinter/v1", "key")
+    agent = HintedTeacherAgent(
+        tools=[],
+        domain_policy="Follow the airline policy.",
+        task=task,
+        llm="hosted_vllm/Qwen3-32B",
+        llm_args={},
+        hinter_endpoint=endpoint,
+        hinter=hinter,
+        refresh_hint_each_turn=True,
+    )
+
+    def fake_generate(**_kwargs):
+        return AssistantMessage(role="assistant", content="Please confirm.")
+
+    monkeypatch.setattr("tau2.agent.llm_agent.generate", fake_generate)
+    state = agent.get_init_state([])
+    _, state = agent.generate_next_message(
+        UserMessage(role="user", content="Please cancel reservation ABC123."), state
+    )
+    agent.generate_next_message(
+        UserMessage(role="user", content="Yes, I confirm."), state
+    )
+
+    assert len(hinter.payloads) == 2
+    assert len(agent.hint_records) == 2
+    assert hinter.payloads[0]["current_history"][-1]["content"] == (
+        "Please cancel reservation ABC123."
+    )
+    assert hinter.payloads[1]["current_history"][-1]["content"] == (
+        "Yes, I confirm."
+    )
+
+
 def test_privileged_prompt_excludes_hint_audit_metadata_and_null_hint():
     prompt = format_teacher_system_prompt_with_hint(
         "policy",

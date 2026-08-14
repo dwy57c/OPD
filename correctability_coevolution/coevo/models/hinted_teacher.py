@@ -216,6 +216,7 @@ class HintedTeacherAgent(LLMAgent):
         hinter_endpoint: HintEndpoint,
         hinter=None,
         initial_hint: TeacherHintResult | None = None,
+        refresh_hint_each_turn: bool = False,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -223,6 +224,7 @@ class HintedTeacherAgent(LLMAgent):
         self.hinter = hinter or ClosedModelTeacherHinter(hinter_endpoint)
         self.hint_records: list[dict] = []
         self._session_hint = initial_hint
+        self.refresh_hint_each_turn = refresh_hint_each_turn
 
     def _hint_payload(self, history: list[APICompatibleMessage]) -> dict[str, Any]:
         return {
@@ -256,10 +258,25 @@ class HintedTeacherAgent(LLMAgent):
             self._session_hint = self.hint_for_history(history)
         return self._session_hint
 
+    def plan_for_history(
+        self, history: list[APICompatibleMessage]
+    ) -> TeacherHintResult:
+        """Return the plan view configured for this rollout.
+
+        Collection creates a fresh one-action Teacher branch at every Student
+        decision, so its default session cache is already decision-local.  A
+        full-dialogue Teacher benchmark must opt into refreshing the plan at
+        every Agent turn to reproduce that treatment over one orchestrator.
+        """
+        if self.refresh_hint_each_turn:
+            self._session_hint = self.hint_for_history(history)
+            return self._session_hint
+        return self.plan_for_session(history)
+
     def hinted_system_prompt_for_history(
         self, history: list[APICompatibleMessage]
     ) -> tuple[str, TeacherHintResult]:
-        result = self.plan_for_session(history)
+        result = self.plan_for_history(history)
         return self.system_prompt_with_hint(result), result
 
     def generate_next_message(
@@ -268,7 +285,7 @@ class HintedTeacherAgent(LLMAgent):
         incoming = (
             message.tool_messages if isinstance(message, MultiToolMessage) else [message]
         )
-        result = self.plan_for_session([*state.messages, *incoming])
+        result = self.plan_for_history([*state.messages, *incoming])
         state.system_messages = [
             SystemMessage(role="system", content=self.system_prompt_with_hint(result))
         ]

@@ -29,6 +29,15 @@ def parse_args():
     parser.add_argument("--max-steps", type=int, default=80)
     parser.add_argument("--max-concurrency", type=int, default=1)
     parser.add_argument(
+        "--hint-refresh",
+        choices=["session", "turn"],
+        default="turn",
+        help=(
+            "Refresh the closed-model plan once per dialogue or before every "
+            "Agent turn. 'turn' matches decision-local collection semantics."
+        ),
+    )
+    parser.add_argument(
         "--modes", nargs="+", choices=["none", "closed_model"],
         default=["none", "closed_model"]
     )
@@ -62,6 +71,8 @@ def run_one(base_config, hinter, args, task_id, mode):
     orchestrator = environment.orchestrator(
         environment.initial_history(), "teacher", seed=args.seed
     )
+    if mode == "closed_model":
+        orchestrator.agent.refresh_hint_each_turn = args.hint_refresh == "turn"
     started = time.monotonic()
     error = None
     try:
@@ -71,6 +82,7 @@ def run_one(base_config, hinter, args, task_id, mode):
             "mode": mode,
             "task_id": str(task_id),
             "seed": args.seed,
+            "hint_refresh": args.hint_refresh if mode == "closed_model" else None,
             "reward": None,
             "success": False,
             "error": f"{type(exc).__name__}: {exc}",
@@ -85,6 +97,7 @@ def run_one(base_config, hinter, args, task_id, mode):
         "mode": mode,
         "task_id": str(task_id),
         "seed": args.seed,
+        "hint_refresh": args.hint_refresh if mode == "closed_model" else None,
         "reward": reward,
         "success": bool(reward is not None and reward > 0),
         "termination_reason": simulation.termination_reason.value,
@@ -229,6 +242,7 @@ def main():
         "task_split": args.task_split,
         "task_ids": [str(task.id) for task in selected],
         "seed": args.seed,
+        "hint_refresh": args.hint_refresh,
         **summarize(rows, args.modes),
     }
     (args.output_dir / "summary.json").write_text(
