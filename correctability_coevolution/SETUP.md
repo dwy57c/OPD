@@ -1,233 +1,170 @@
-# Local setup and execution
+# Contingent-tutoring setup
 
-The runtime is local-model only by default. Do not permit Hugging Face or
-ModelScope downloads unless the user explicitly changes that policy.
+## 1. Runtime
 
-## 1. Configure local paths
-
-From the repository root:
+Copy the example environment file and set local model paths. Keep credentials in
+the process environment, not in the repository.
 
 ```bash
-cp .env.example .env
+cp ../.env.example ../.env
+export COEVO_POLICY_PATH=/absolute/path/to/student-checkpoint
+export COEVO_BUYER_PATH=/absolute/path/to/fixed-user-model
+export COEVO_TEACHER_HINT_URL=https://gateway.example/v1
+export COEVO_TEACHER_HINT_API_KEY=...
+export COEVO_TEACHER_HINT_MODEL=gemini-3.1-pro-preview
+export COEVO_SHARPEN_ENABLED=0
 ```
 
-Set at least:
+The active E1–E3 path needs the policy endpoint on port 8000 and the fixed τ²
+user endpoint on port 8002. It does not need `policy_previous` or the Buyer GRPO
+rollout server.
 
 ```bash
-COEVO_POLICY_MODEL_DIR=/absolute/host/path/to/Qwen3-4B
-COEVO_BUYER_MODEL_DIR=/absolute/host/path/to/Buyer-or-User-model
-COEVO_ALLOW_DOWNLOADS=0
-COEVO_REPORT_TO=wandb
+export COEVO_START_ROLLOUT=false
+bash scripts/start_servers.sh
+python scripts/preflight.py services
 ```
 
-Inside the container the Student is mounted read-only at `/models/policy` and
-the Buyer/User at `/models/buyer`. If `COEVO_BUYER_MODEL_DIR` is unset, Compose
-mounts the policy model for both roles. The controller fills
-`COEVO_PREVIOUS_POLICY_PATH` only after the Student update.
-
-Do not place API keys in `.env` committed to source control. The closed-model
-hint service and W&B credentials must be injected through the runtime
-environment.
-
-## 2. Start the existing runtime
+## 2. Tests
 
 ```bash
-docker compose up -d coevo
-docker compose exec coevo bash
-```
-
-Inside the container:
-
-```bash
-cd /workspace/OPD/correctability_coevolution
-python scripts/preflight.py python
-python scripts/preflight.py start
 pytest -q
+ruff check coevo scripts tests
 ```
 
-`preflight.py` verifies pinned Python packages, τ² data/revision, local model
-files, GPU assignment, port conflicts, and `report_to=wandb`.
+## 3. E1 static audit
 
-## 3. Service layout
-
-| Role | Port | Default GPU variable | Purpose |
-|---|---:|---|---|
-| `policy` | 8000 | `COEVO_POLICY_GPUS` | current unprivileged Student `S_(k+1)` |
-| `policy_previous` | 8001 | `COEVO_PREVIOUS_POLICY_GPUS` | frozen `S_k`; also the `S_k+skill` Teacher anchor during Buyer GRPO |
-| `buyer` | 8002 | `COEVO_BUYER_GPUS` | Buyer reference endpoint |
-| `rollout` | 8003 | `COEVO_BUYER_ROLLOUT_GPUS` | Swift online rollout server |
-
-At initial collection there is no previous role. After `S_k -> S_(k+1)`, the
-controller starts `S_k` on port 8001 and `S_(k+1)` on port 8000, verifies both,
-sets `COEVO_TEACHER_ANCHOR=previous`, then starts Buyer GRPO. Collection uses
-`COEVO_TEACHER_ANCHOR=current` so Student supervision for round `k` still comes
-from `S_k+skill`. The controller does not start the separate rollout replica
-during collection; it starts that role only after the checkpoint pair is ready.
-
-Manual role commands:
-
-```bash
-./scripts/start_role.sh policy /models/policy
-./scripts/start_role.sh policy_previous /path/to/pre-update-checkpoint
-./scripts/start_role.sh buyer /models/policy
-./scripts/start_role.sh rollout /models/policy
-
-./scripts/stop_role.sh rollout
-./scripts/stop_role.sh policy_previous
-./scripts/stop_role.sh policy
-./scripts/stop_role.sh buyer
-```
-
-Role scripts only stop PIDs recorded in this project's runtime registry.
-
-## 4. Required objective configuration
-
-```bash
-COEVO_TEACHER_GAP_TOPK=20
-COEVO_TEACHER_GAP_MIN_SUPPORT_MASS=0.95
-COEVO_TEACHER_GAP_EPS=1e-8
-
-COEVO_SKILL_GATE_METRIC=forward_kl
-COEVO_SKILL_GATE_LOW=0.0
-COEVO_SKILL_GATE_HIGH=0.05
-COEVO_SKILL_SHARPEN_T_MIN=0.7
-
-# Analysis only; main collection and Buyer reward do not run this continuation.
-COEVO_TEACHER_VALIDATION_CONTINUATIONS=1
-
-COEVO_DATASET_SCHEMA_VERSION=4
-COEVO_TARGET_SCHEMA_VERSION=2
-COEVO_TEACHER_TARGET_VERSION=skill-contrast-sharpened-v2
-```
-
-Only one Buyer reward is registered: `tau2_stage_learning_progress`. There is no
-runtime reward-mode selector or single-checkpoint fallback. Both Buyer training
-scripts pass `--scale_rewards group`.
-
-Skill thresholds and `T_min` should be calibrated once on a held-out calibration
-split and frozen before matched scientific comparisons.
-
-## 5. Collect a Student dataset
-
-With the current policy, Buyer reference, and hint service healthy:
+First collect or select an immutable public-state pool. Then generate every hint
+level against those same states:
 
 ```bash
 python scripts/collect_round.py \
-  --output-dir artifacts/round_0000/data \
-  --task-ids 1
+  --output-dir artifacts/public_states \
+  --task-ids 1 2 3 \
+  --hint-level L0_NONE \
+  --no-sharpen-enabled
+
+python scripts/audit_hint_ladder.py \
+  --from-trajectories artifacts/public_states/trajectories.jsonl \
+  --output-dir artifacts/e1_hint_audit
 ```
 
-Outputs:
+L3 standard actions are continuation-validated by default and only perfect
+actions are eligible for the fixed GRPO target. Change
+`--standard-quality-threshold` explicitly if a softer audited target is needed.
 
-```text
-trajectories.jsonl   full audit records, including rejected targets
-student_gkd.jsonl    accepted cached TeacherTargetRecord rows
-buyer_grpo.jsonl     Buyer prompts for later online GRPO
-summary.json         schema, provenance, counts, hashes, and errors
-```
+The grounding judge is enabled by default. Use
+`--no-use-grounding-judge` only for infrastructure smoke tests; such output is
+not sufficient for a behavioral claim.
 
-Student eligibility requires a complete Teacher action, exact target alignment,
-valid hinted/unhinted distributions, and sufficient Teacher support mass.
-The main collector does not run a Teacher takeover continuation or terminal
-quality scorer.
+## 4. E2 equal-budget dose response
 
-## 6. Run one complete alternating round
-
-The canonical entry point is:
+The runner collects one L0 public-state pool per seed, re-labels the exact same
+states at L1/L2/L3, chooses the smallest available reference-token total, and
+trains every arm to that budget.
 
 ```bash
-python scripts/run_coevolution.py \
-  --output-dir artifacts/stage_run \
-  --rounds 1 \
-  --student-steps 1 \
-  --buyer-steps 1 \
-  --task-ids 1 \
-  --start-services
+python scripts/run_dosage_experiment.py \
+  --output-dir artifacts/e2_dosage \
+  --task-ids 1 2 3 \
+  --seeds 42 43 44 \
+  --student-steps 100
 ```
 
-The controller performs:
-
-```text
-collect D_k
-train Student S_k -> S_(k+1)
-serve S_k and S_(k+1)
-preflight both endpoints
-train Buyer B_k -> B_(k+1)
-atomically commit manifest
-```
-
-Use `--resume --start-services` only when reusing an existing output directory.
-Resume validates schema, target version, reward formula, task IDs, and exact
-checkpoint identities before any work.
-
-## 7. Isolated Student smoke
-
-Start the current policy role, then build a fixture from real current-policy
-prompt logits:
+Evaluate each resulting checkpoint with the fixed held-out user, save the τ²
+conversations, and run:
 
 ```bash
-./scripts/start_role.sh policy /models/policy
-
-python scripts/make_student_smoke_fixture.py \
-  --model-path /models/policy \
-  --policy-url http://127.0.0.1:8000 \
-  --output artifacts/infra_smoke/student_gkd.jsonl
-
-WANDB_MODE=offline ./scripts/train_student_smoke.sh \
-  artifacts/infra_smoke/student_gkd.jsonl \
-  artifacts/infra_smoke/student_adapter
+python scripts/evaluate_behavior.py evaluation.jsonl \
+  --output artifacts/e2_behavior.json
 ```
 
-This verifies real logits, target caching, finite unweighted forward-KL,
-non-zero target gradients, W&B reporting, checkpoint save, and reload. It is not
-a τ² capability result.
-
-## 8. Buyer smoke prerequisites
-
-Buyer smoke requires two distinct checkpoints:
+## 5. E3 h* controller
 
 ```bash
-export COEVO_PREVIOUS_POLICY_PATH=/path/to/S_k
-export COEVO_CURRENT_POLICY_CHECKPOINT=/path/to/S_k_plus_1
-export COEVO_POLICY_PATH=/path/to/S_k_plus_1
-export COEVO_TEACHER_ANCHOR=previous
+python scripts/run_dosage_curriculum.py \
+  --output-dir artifacts/e3_hstar \
+  --task-ids 1 2 3 \
+  --k 8 \
+  --policy hstar
 ```
 
-Start previous, current, Buyer, and rollout roles, run service preflight, then:
+Baselines use `--policy fixed:L3`, `fixed:L2`, or `random`.
+
+## 6. Hinter GRPO and alternation
+
+Build one fixed-standard-action row per audited state. The default uses the
+eligible L3 action as the standard trajectory, but candidate hints cannot change
+that target:
 
 ```bash
-WANDB_MODE=offline ./scripts/train_buyer_smoke.sh \
-  artifacts/round_0000/data/buyer_grpo.jsonl \
-  artifacts/infra_smoke/buyer_adapter
+python scripts/build_hinter_grpo_dataset.py \
+  artifacts/e1_hint_audit/audit_rows.jsonl \
+  artifacts/hinter_grpo.jsonl
 ```
 
-The rollout must report `checkpoint_teacher_anchor == checkpoint_previous`,
-finite `previous_gaps`, `current_gaps`, raw LP, positive-LP reward, shared target
-hashes, and only Buyer-token response masks.
-
-Buyer training defaults to `COEVO_BUYER_BETA=0.01`; reference KL is an optimizer
-regularizer, while stage learning progress remains the only scalar Buyer
-reward. Qwen3.5 Buyer training must use
-`COEVO_BUYER_ATTN_IMPL=flash_attn` (FlashAttention2). The Trainer rejects
-Qwen3.5 SDPA/eager runs before optimization, because that path produced
-non-finite full-attention gradients in this runtime. NaN/Inf loss filtering is
-disabled so failures remain visible in logs.
-
-Every LoRA entrypoint runs `check_adapter_finite.py` after save and fails if any
-adapter value is NaN or infinity. The gradient guard defaults to fail-closed
-(`COEVO_NONFINITE_GRADIENT_ACTION=error`). `zero` is an explicit diagnostic
-mode for kernels that emit a small number of non-finite gradient elements; its
-sanitized value/tensor counts are logged to W&B and must be reported.
-
-## 9. Verification commands
+Before each hinter update, regenerate actual Student macro-actions under several
+hints for every state. Generate the two mandatory controls, create same-state
+pairwise labels, and initialize a Student-sized scalar-head discriminator from
+the current Student checkpoint:
 
 ```bash
-pytest -q
-bash -n scripts/*.sh scripts/lib/*.sh
-git diff --check
-pytest -q tests/test_no_obsolete_objectives.py
+python scripts/collect_discriminator_controls.py \
+  artifacts/hinter_grpo.jsonl --output-dir artifacts/discriminator_controls_t
+
+python scripts/collect_behavior_hint_samples.py \
+  artifacts/hinter_grpo.jsonl artifacts/current_behavior_samples.jsonl \
+  --hints-per-state 4
+
+python scripts/build_copying_discriminator_dataset.py \
+  artifacts/current_behavior_samples.jsonl \
+  artifacts/copying_discriminator_round_t.jsonl \
+  --explicit-copy-controls artifacts/discriminator_controls_t/explicit_copy_controls.jsonl \
+  --useless-controls artifacts/discriminator_controls_t/useless_controls.jsonl
+
+python scripts/train_behavior_discriminator.py \
+  --student-checkpoint /path/to/current-student \
+  --pairs artifacts/copying_discriminator_round_t.jsonl \
+  --output-dir artifacts/copying_discriminator_t
+
+CUDA_VISIBLE_DEVICES=7 python scripts/serve_behavior_discriminator.py \
+  --model artifacts/copying_discriminator_t --port 8010
 ```
 
-The objective-regression test must pass. No test or smoke command may
-download a model. All Trainer entry points use W&B; set `WANDB_MODE=offline` when
-network access is not part of the test.
+Then freeze that discriminator and run the only hinter reward:
+
+```bash
+export COEVO_HINTER_BASE_MODEL=/path/to/open-hinter
+export COEVO_HINTER_DISCRIMINATOR_URL=http://127.0.0.1:8010
+export COEVO_HINTER_COPY_WEIGHT=1.0
+export COEVO_HINTER_LENGTH_WEIGHT=0.01
+export COEVO_HINTER_ANCHOR_BETA=0.01
+export COEVO_HINTER_REWARD_TRACE_PATH=artifacts/hinter_reward_round_t.jsonl
+bash scripts/train_hinter_grpo.sh \
+  artifacts/hinter_grpo.jsonl artifacts/hinter_round_t 20
+```
+
+`coevo/hinter_training/alternating_loop.py` fixes the outer order: Student N
+steps, one pass@k measurement for both delayed acceptance and curriculum,
+fresh discriminator retraining, then hinter GRPO. A regression rolls back the
+Student segment and the prior hinter candidate; no pass@k or observed
+distillation gain is passed to GRPO.
+
+Every few rounds, rerun `train_behavior_discriminator.py` from the same current
+Student with a different seed and empty output directory, then compare it with
+the active scorer using `compare_behavior_discriminators.py`. This independent
+auditor is not reused for training rewards.
+
+## 7. Detector validation
+
+Human-label at least 200 rows per detector and report agreement and Cohen's
+kappa:
+
+```bash
+python scripts/validate_behavior_detectors.py annotations.jsonl \
+  --output artifacts/detector_validation.json \
+  --minimum-rows 200
+```
+
+The retired Buyer/LP setup is preserved in
+`../docs/archive/SETUP_BUYER_LP.md` for historical reproduction only.

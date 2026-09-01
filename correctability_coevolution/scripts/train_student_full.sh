@@ -12,6 +12,13 @@ export HF_DATASETS_CACHE="$HF_HOME/datasets"
 export MODELSCOPE_CACHE="$COEVO_ROOT/runtime/modelscope_cache"
 mkdir -p "$HF_HOME"
 coevo_require_nonempty_file "$DATA"
+if [[ -n ${COEVO_ACTIVE_TOKEN_BUDGET:-} ]]; then
+  BUDGET_DATA="$OUT/equal_budget_student_gkd.jsonl"
+  python "$COEVO_ROOT/scripts/prepare_active_token_budget.py" \
+    "$DATA" "$BUDGET_DATA" --budget "$COEVO_ACTIVE_TOKEN_BUDGET"
+  DATA=$BUDGET_DATA
+  coevo_require_nonempty_file "$DATA"
+fi
 python "$COEVO_ROOT/scripts/wait_for_servers.py" \
   "${COEVO_POLICY_URL:-http://127.0.0.1:${COEVO_POLICY_PORT:-8000}}" \
   --timeout 30 \

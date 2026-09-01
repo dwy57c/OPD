@@ -71,6 +71,7 @@ class ArtifactContract:
     tokenizer_id: str
     tokenizer_hash: str
     teacher_target_version: str
+    hint_level: str
     reward_name: str
     reward_formula_version: str
     student_checkpoint_current: str
@@ -103,6 +104,7 @@ class ArtifactContract:
             not contract.tokenizer_id
             or not contract.tokenizer_hash
             or not contract.teacher_target_version
+            or not contract.hint_level
         ):
             raise ValueError(
                 f"{source} must identify tokenizer and Teacher-target construction"
@@ -134,8 +136,12 @@ def artifact_metadata(config) -> dict:
             getattr(
                 config,
                 "teacher_target_version",
-                "skill-contrast-natural-note-v3",
+                "hint-ladder-raw-v1",
             )
+        ),
+        hint_level=str(
+            getattr(getattr(config, "hint_level", None), "value", None)
+            or getattr(config, "hint_level", "L3_ORACLE")
         ),
         reward_name=REWARD_NAME,
         reward_formula_version=REWARD_FORMULA_VERSION,
@@ -178,6 +184,7 @@ def validate_compatible_artifacts(
             expected.tokenizer_id,
             expected.tokenizer_hash,
             expected.teacher_target_version,
+            expected.hint_level,
             expected.reward_name,
             expected.reward_formula_version,
         )
@@ -190,6 +197,7 @@ def validate_compatible_artifacts(
                 contract.tokenizer_id,
                 contract.tokenizer_hash,
                 contract.teacher_target_version,
+                contract.hint_level,
                 contract.reward_name,
                 contract.reward_formula_version,
             )

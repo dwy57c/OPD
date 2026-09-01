@@ -1,3 +1,5 @@
+"""Deprecated consecutive-checkpoint LP reward retained for reproduction only."""
+
 from dataclasses import asdict, dataclass
 import math
 from typing import Sequence

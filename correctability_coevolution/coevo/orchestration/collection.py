@@ -9,6 +9,8 @@ from coevo.artifacts import (
 )
 from coevo.config import InfraConfig
 from coevo.environment import Tau2Environment
+from coevo.environment.tau2 import load_messages
+from coevo.intervention import extract_decision_states
 from coevo.rollout import NaturalDecisionCollector, build_teacher_target_labeler
 
 
@@ -291,3 +293,93 @@ def collect_dataset(
         buyer_rows,
         errors,
     )
+
+
+def relabel_dataset_from_trajectories(
+    config: InfraConfig,
+    source_path: Path,
+    output_dir: Path,
+) -> dict:
+    """Regenerate Teacher labels for an immutable public-state pool.
+
+    E1/E2 must compare hint levels on identical Student/Buyer trajectories.
+    This function never rolls out either policy. It reuses each source trunk and
+    decision index, then generates only the level-specific hint, Teacher action,
+    and target record.
+    """
+
+    source_records = _read_jsonl(source_path, config.dataset_schema_version)
+    if not source_records:
+        raise ValueError("source trajectory pool is empty")
+    source_fingerprint = dataset_fingerprint(source_records)
+    records: list[dict] = []
+    student_rows: list[dict] = []
+    buyer_rows: list[dict] = []
+    errors: list[dict] = []
+    task_ids: list[str] = []
+    for source in source_records:
+        task_id = str(source["task_id"])
+        if task_id not in task_ids:
+            task_ids.append(task_id)
+        environment = Tau2Environment(
+            replace(
+                config,
+                domain=str(source.get("domain", config.domain)),
+                task_split=str(source.get("task_split", config.task_split)),
+                task_id=task_id,
+            )
+        )
+        collector = NaturalDecisionCollector(
+            environment,
+            build_teacher_target_labeler(environment),
+            max_decisions=environment.config.max_teacher_targets,
+        )
+        trunk = load_messages(source["trunk"])
+        source_decisions = source.get("student_decisions") or []
+        indexes = [int(row["message_index"]) for row in source_decisions]
+        if not indexes:
+            indexes = [state.message_index for state in extract_decision_states(trunk)]
+        decisions = []
+        for message_index in indexes:
+            try:
+                labeled = collector.labeler.score_decision(trunk, message_index)
+                decisions.append(collector._materialize_target(labeled))
+            except Exception as error:
+                errors.append(
+                    {
+                        "task_id": task_id,
+                        "seed": source.get("seed"),
+                        "message_index": message_index,
+                        "type": type(error).__name__,
+                        "message": str(error),
+                    }
+                )
+                raise
+        record = {
+            **artifact_metadata(environment.config),
+            "domain": environment.config.domain,
+            "task_split": environment.config.task_split,
+            "task_id": task_id,
+            "seed": int(source.get("seed", config.seed)),
+            "trunk": source["trunk"],
+            "source_dataset_fingerprint": source_fingerprint,
+            "student_decisions": decisions,
+            "teacher_target_cache": collector._builder().cache_stats,
+        }
+        records.append(record)
+        student_rows.extend(collector.student_rows(record))
+        buyer_rows.append(collector.buyer_row())
+    summary = _persist(
+        config,
+        output_dir,
+        task_ids,
+        records,
+        student_rows,
+        buyer_rows,
+        errors,
+    )
+    summary["source_trajectories"] = str(source_path)
+    summary["source_dataset_fingerprint"] = source_fingerprint
+    summary["public_state_pool_reused"] = True
+    _write_json(output_dir / "summary.json", summary)
+    return summary

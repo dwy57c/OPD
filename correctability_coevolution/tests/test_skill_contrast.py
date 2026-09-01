@@ -67,3 +67,23 @@ def test_missing_target_or_low_teacher_support_fails_closed():
             target_token_ids=[3],
             config=SkillContrastConfig(minimum_support_mass=0.9),
         )
+
+
+def test_disabled_sharpening_preserves_raw_hinted_distribution():
+    result = build(
+        [0.8, 0.2],
+        [0.2, 0.8],
+        SkillContrastConfig(
+            low=0.0,
+            high=0.05,
+            minimum_temperature=0.5,
+            minimum_support_mass=0.9,
+            sharpen_enabled=False,
+        ),
+    )
+
+    assert result.skill_gate_values[0] > 0
+    assert result.sharpening_temperatures == pytest.approx([1.0])
+    assert result.sharpened_topk_logprobs[0] == pytest.approx(
+        [math.log(0.8), math.log(0.2)]
+    )

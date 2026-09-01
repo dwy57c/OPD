@@ -1,3 +1,5 @@
+"""Deprecated three-view LP scorer retained for historical reproduction only."""
+
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import asdict, dataclass
@@ -207,6 +209,7 @@ class TeacherTargetBuilder:
             minimum_temperature=config.skill_sharpen_t_min,
             minimum_support_mass=config.teacher_gap_min_support_mass,
             epsilon=config.skill_gate_eps,
+            sharpen_enabled=config.sharpen_enabled,
         )
         self._target_cache: dict[tuple[str, ...], TeacherTargetRecord] = {}
         self._view_cache: dict[tuple[str, ...], SparseTargetView] = {}

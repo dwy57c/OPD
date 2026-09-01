@@ -2,6 +2,7 @@ from tau2.agent.llm_agent import LLMAgent
 from tau2.user.user_simulator import UserSimulator
 
 from coevo.config import InfraConfig, ModelEndpoint
+from coevo.hints import HintLevel
 from coevo.models.hinted_teacher import HintedTeacherAgent
 
 
@@ -25,7 +26,10 @@ class Tau2PolicyFactory:
 
     def teacher(self, environment, task, hint_result=None):
         endpoint = self.config.teacher
-        if self.config.teacher_hint_mode == "closed_model":
+        if (
+            self.config.teacher_hint_mode == "closed_model"
+            and self.config.hint_level is not HintLevel.L0_NONE
+        ):
             return HintedTeacherAgent(
                 tools=environment.get_tools(),
                 domain_policy=environment.get_policy(),
@@ -34,6 +38,7 @@ class Tau2PolicyFactory:
                 llm_args=endpoint.litellm_args,
                 hinter_endpoint=self.config.teacher_hinter,
                 initial_hint=hint_result,
+                hint_level=self.config.hint_level,
             )
         return self._agent(environment, endpoint)
 

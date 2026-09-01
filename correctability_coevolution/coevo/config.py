@@ -2,6 +2,19 @@ from dataclasses import dataclass
 import os
 
 from coevo.artifacts import model_manifest_revision
+from coevo.hints import HintLevel
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be a boolean, got {value!r}")
 
 
 @dataclass(frozen=True)
@@ -121,6 +134,7 @@ class InfraConfig:
     seed: int = 42
     teacher_hint_mode: str = "closed_model"
     teacher_hinter: HintEndpoint | None = None
+    hint_level: HintLevel = HintLevel.L3_ORACLE
     teacher_anchor: str = "current"
     current_policy_checkpoint: str = ""
     previous_policy_checkpoint: str = ""
@@ -128,7 +142,7 @@ class InfraConfig:
     round_index: int = 0
     dataset_schema_version: int = 4
     target_schema_version: int = 2
-    teacher_target_version: str = "skill-contrast-natural-note-v3"
+    teacher_target_version: str = "hint-ladder-raw-v1"
     tokenizer_id: str = ""
     current_policy_revision: str = ""
     previous_policy_revision: str = ""
@@ -141,6 +155,7 @@ class InfraConfig:
     skill_gate_low: float = 0.0
     skill_gate_high: float = 0.05
     skill_sharpen_t_min: float = 0.7
+    sharpen_enabled: bool = False
 
     def __post_init__(self):
         if self.teacher_hint_mode not in {"none", "closed_model"}:
@@ -148,7 +163,13 @@ class InfraConfig:
                 "teacher_hint_mode must be 'none' or 'closed_model', got "
                 f"{self.teacher_hint_mode!r}"
             )
-        if self.teacher_hint_mode == "closed_model" and self.teacher_hinter is None:
+        parsed_hint_level = HintLevel.parse(self.hint_level)
+        object.__setattr__(self, "hint_level", parsed_hint_level)
+        if (
+            self.teacher_hint_mode == "closed_model"
+            and parsed_hint_level is not HintLevel.L0_NONE
+            and self.teacher_hinter is None
+        ):
             raise ValueError(
                 "teacher_hinter is required when teacher_hint_mode='closed_model'"
             )
@@ -238,6 +259,9 @@ class InfraConfig:
             f"http://127.0.0.1:{policy_port}",
         )
         hint_mode = os.getenv("COEVO_TEACHER_HINT_MODE", "closed_model")
+        hint_level = HintLevel.parse(
+            os.getenv("COEVO_HINT_LEVEL", HintLevel.L3_ORACLE.value)
+        )
         previous_policy_url = os.getenv("COEVO_PREVIOUS_POLICY_URL", "")
         previous_policy = None
         if previous_policy_url or previous_policy_path:
@@ -281,7 +305,13 @@ class InfraConfig:
             nl_judge_retries=int(os.getenv("COEVO_NL_JUDGE_RETRIES", "3")),
             seed=int(os.getenv("COEVO_SEED", "42")),
             teacher_hint_mode=hint_mode,
-            teacher_hinter=HintEndpoint.from_env(required=hint_mode == "closed_model"),
+            teacher_hinter=HintEndpoint.from_env(
+                required=(
+                    hint_mode == "closed_model"
+                    and hint_level is not HintLevel.L0_NONE
+                )
+            ),
+            hint_level=hint_level,
             teacher_anchor=os.getenv("COEVO_TEACHER_ANCHOR", "current"),
             current_policy_checkpoint=current_checkpoint,
             previous_policy_checkpoint=previous_checkpoint,
@@ -292,7 +322,7 @@ class InfraConfig:
             ),
             target_schema_version=int(os.getenv("COEVO_TARGET_SCHEMA_VERSION", "2")),
             teacher_target_version=os.getenv(
-                "COEVO_TEACHER_TARGET_VERSION", "skill-contrast-natural-note-v3"
+                "COEVO_TEACHER_TARGET_VERSION", "hint-ladder-raw-v1"
             ),
             tokenizer_id=os.getenv(
                 "COEVO_TOKENIZER_ID",
@@ -324,4 +354,5 @@ class InfraConfig:
             skill_sharpen_t_min=float(
                 os.getenv("COEVO_SKILL_SHARPEN_T_MIN", "0.7")
             ),
+            sharpen_enabled=_env_bool("COEVO_SHARPEN_ENABLED", False),
         )

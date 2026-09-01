@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""Archived Buyer/LP reproduction controller.
+
+The active contingent-tutoring experiments use audit_hint_ladder.py,
+run_dosage_experiment.py, and run_dosage_curriculum.py. This controller remains
+only to reproduce historical checkpoints.
+"""
 import argparse
 import json
 import os
@@ -152,9 +158,23 @@ def main() -> None:
     parser.add_argument("--task-ids", nargs="+", default=["1"])
     parser.add_argument("--start-services", action="store_true")
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument(
+        "--allow-deprecated-buyer-lp",
+        action="store_true",
+        help="Explicitly acknowledge that this runs the archived Buyer/LP method",
+    )
     args = parser.parse_args()
+    if not args.allow_deprecated_buyer_lp:
+        parser.error(
+            "Buyer/LP co-evolution is archived; pass --allow-deprecated-buyer-lp "
+            "only for historical reproduction"
+        )
 
     env = dict(os.environ)
+    # Pin the historical contract even when the active .env defaults to L2/raw.
+    env["COEVO_HINT_LEVEL"] = "L3_ORACLE"
+    env["COEVO_SHARPEN_ENABLED"] = "1"
+    env["COEVO_TEACHER_TARGET_VERSION"] = "skill-contrast-natural-note-v3"
     tau2_src = resolve_tau2_src(env)
     env["COEVO_ROOT"] = str(ROOT)
     env["COEVO_TAU2_SRC"] = str(tau2_src)

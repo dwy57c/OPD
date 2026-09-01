@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+from dataclasses import replace
 import json
 import os
 from pathlib import Path
@@ -9,6 +10,7 @@ from loguru import logger
 from tau2.run import get_tasks
 
 from coevo.config import InfraConfig
+from coevo.hints import HintLevel
 from coevo.orchestration import collect_dataset
 
 
@@ -22,6 +24,17 @@ def main() -> None:
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--num-shards", type=int, default=1)
     parser.add_argument("--shard-index", type=int, default=0)
+    parser.add_argument(
+        "--hint-level",
+        choices=[level.value for level in HintLevel],
+        help="Privileged-context dose; overrides COEVO_HINT_LEVEL",
+    )
+    parser.add_argument(
+        "--sharpen-enabled",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable legacy skill-contrast temperature sharpening",
+    )
     args = parser.parse_args()
 
     if args.num_shards < 1:
@@ -33,6 +46,20 @@ def main() -> None:
         logger.add(sys.stderr, level=level)
 
     config = InfraConfig.from_env()
+    if args.hint_level is not None or args.sharpen_enabled is not None:
+        config = replace(
+            config,
+            hint_level=(
+                HintLevel.parse(args.hint_level)
+                if args.hint_level is not None
+                else config.hint_level
+            ),
+            sharpen_enabled=(
+                args.sharpen_enabled
+                if args.sharpen_enabled is not None
+                else config.sharpen_enabled
+            ),
+        )
     if args.all_compatible and args.task_ids:
         parser.error("--all-compatible and --task-ids are mutually exclusive")
     if args.all_compatible:

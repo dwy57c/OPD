@@ -10,6 +10,7 @@ class SkillContrastConfig:
     minimum_temperature: float = 0.7
     minimum_support_mass: float = 0.95
     epsilon: float = 1e-8
+    sharpen_enabled: bool = True
 
     def __post_init__(self) -> None:
         if self.low < 0 or self.high <= self.low:
@@ -171,7 +172,11 @@ def construct_skill_contrast_target(
         )
         contrast = max(0.0, contrast)
         gate = min(1.0, max(0.0, (contrast - config.low) / (config.high - config.low)))
-        temperature = 1.0 - gate * (1.0 - config.minimum_temperature)
+        temperature = (
+            1.0 - gate * (1.0 - config.minimum_temperature)
+            if config.sharpen_enabled
+            else 1.0
+        )
         alpha = 1.0 / temperature
         powered = [value**alpha for value in q]
         normalizer = sum(powered)

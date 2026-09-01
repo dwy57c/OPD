@@ -13,6 +13,7 @@ def contract(**overrides):
         "tokenizer_id": "qwen3-tokenizer@revision",
         "tokenizer_hash": "tokenizer-hash",
         "teacher_target_version": "skill-contrast-sharpened-v2",
+        "hint_level": "L2_PROCEDURAL",
         "reward_name": "tau2_stage_learning_progress",
         "reward_formula_version": "previous-skill-anchor-progress-v3",
         "student_checkpoint_current": "/checkpoints/current",
@@ -30,6 +31,10 @@ def test_artifact_contract_rejects_incompatible_tokenizer_or_target():
     with pytest.raises(ValueError, match="incompatible artifact contracts"):
         validate_compatible_artifacts(
             [("first", contract()), ("second", contract(tokenizer_id="other"))]
+        )
+    with pytest.raises(ValueError, match="incompatible artifact contracts"):
+        validate_compatible_artifacts(
+            [("first", contract()), ("second", contract(hint_level="L3_ORACLE"))]
         )
     with pytest.raises(ValueError, match="incompatible artifact contracts"):
         validate_compatible_artifacts(

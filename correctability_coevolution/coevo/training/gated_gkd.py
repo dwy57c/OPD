@@ -11,10 +11,39 @@ from coevo.rollout.views import (
     swift_training_messages,
 )
 from coevo.scoring.teacher_target import TeacherTargetRecord
+from coevo.hints import HintLevel
 
 
 DATASET_SCHEMA_VERSION = 4
 TRAINING_TARGET = "natural_hint_on_policy_jsd"
+
+
+def truncate_rows_to_active_token_budget(
+    rows: list[dict], budget: int
+) -> tuple[list[dict], int]:
+    """Deterministically cap a dosage arm by reference active-token count.
+
+    The current on-policy completion length is unknown before training.  The
+    frozen reference action's ``target_token_count`` is therefore the auditable
+    pre-training proxy shared by every arm.  The row that would cross the cap is
+    excluded; no example is partially tokenized.
+    """
+
+    if budget < 1:
+        raise ValueError("active-token budget must be positive")
+    selected: list[dict] = []
+    used = 0
+    for row in rows:
+        count = int(row.get("target_token_count", 0))
+        if count < 1:
+            raise ValueError("each training row must have target_token_count > 0")
+        if used + count > budget:
+            continue
+        selected.append(row)
+        used += count
+        if used == budget:
+            break
+    return selected, used
 
 
 def validate_student_training_row(row: dict) -> TeacherTargetRecord:
@@ -36,6 +65,7 @@ def validate_student_training_row(row: dict) -> TeacherTargetRecord:
             f"training_target must be {TRAINING_TARGET!r}; "
             f"got {row.get('training_target')!r}"
         )
+    HintLevel.parse(row.get("hint_level", HintLevel.L3_ORACLE.value))
     messages = row.get("messages")
     if not isinstance(messages, list):
         raise ValueError("schema v4 requires a messages list")

@@ -6,6 +6,7 @@ from tau2.data_model.message import AssistantMessage
 
 from coevo.artifacts import artifact_metadata, canonical_hash
 from coevo.environment import Tau2Environment
+from coevo.hints import HintLevel
 from coevo.environment.tau2 import dump_messages, load_messages
 from coevo.models import format_teacher_system_prompt_with_hint
 from coevo.rollout.views import (
@@ -61,6 +62,9 @@ class NaturalDecisionCollector:
 
     def _materialize_target(self, decision: dict) -> dict:
         candidate = dict(decision)
+        config = getattr(self.environment, "config", None)
+        level = getattr(config, "hint_level", HintLevel.L3_ORACLE)
+        candidate["hint_level"] = HintLevel.parse(level).value
         history_before = load_messages(candidate["history_before"])
         teacher_action = AssistantMessage.model_validate(candidate["teacher_action"])
         visible_messages = student_view(
@@ -172,6 +176,7 @@ class NaturalDecisionCollector:
                     ),
                     "tools": self._tool_schemas(),
                     "training_target": "natural_hint_on_policy_jsd",
+                    "hint_level": self.environment.config.hint_level.value,
                     "teacher_target_record": target.to_dict(),
                     "state_hash": target.state_hash,
                     "teacher_action_hash": target.teacher_action_hash,
@@ -204,6 +209,7 @@ class NaturalDecisionCollector:
             "task_id": env.task.id,
             "tau_history": dump_messages(history),
             "buyer_plan_mode": env.config.buyer_plan_mode,
+            "hint_level": env.config.hint_level.value,
         }
         if buyer.tools and env.config.buyer_plan_mode == "legacy":
             row["tools"] = [tool.openai_schema for tool in buyer.tools]

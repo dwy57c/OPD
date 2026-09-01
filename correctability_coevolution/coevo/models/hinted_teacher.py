@@ -1,7 +1,6 @@
 from dataclasses import asdict, dataclass
 import hashlib
 import json
-import re
 import time
 from typing import Any
 
@@ -23,37 +22,16 @@ from tau2.data_model.message import (
 from tau2.data_model.tasks import Task
 
 from coevo.config import HintEndpoint
-
-
-HINTER_INSTRUCTION = """
-Write a short private decision note that helps a customer-service policy model
-choose its next turn. Write like a careful expert reasoning in ordinary prose,
-not like a controller issuing an answer. The note is private and will never be
-shown to the customer.
-
-Use the dialogue, tool results, domain policy, and privileged resolution facts
-as evidence. Establish what is already known, what remains unresolved, and what
-policy constraint matters now. When more than one move is genuinely plausible,
-briefly consider two or three alternatives and the tradeoff or evidence that
-favors one. End with a tentative semantic direction and any important
-confirmation or safety guardrail, while leaving the policy model to choose and
-express the concrete action itself.
-
-Do not emit an exact function or tool name, argument key, JSON, code, schema,
-quoted call syntax, or any other copyable API invocation. Do not quote or
-mechanically restate the oracle steps. Do not use headings, numbered fields,
-bullet lists, or a rigid template. You may mention identifiers, dates, routes,
-or amounts only as facts in natural sentences when they are necessary to reason
-correctly. Do not write the public reply. Use complete sentences and finish the
-note cleanly. Keep it concise, usually 60-140 words.
-""".strip()
-
-
-_RIGID_HEADING = re.compile(
-    r"^(?:#{1,6}\s*)?(?:state|user intent|next action|remaining plan|policy checks)\s*:?$",
-    re.IGNORECASE,
+from coevo.hints import (
+    HintLevel,
+    hint_instruction,
+    prepare_hint_payload,
+    validate_hint_note,
 )
-_LIST_ITEM = re.compile(r"^(?:[-*]\s+|\d+[.)]\s+)")
+
+
+# Compatibility export for callers that benchmark the historical full-oracle dose.
+HINTER_INSTRUCTION = hint_instruction(HintLevel.L3_ORACLE)
 
 
 @dataclass(frozen=True)
@@ -62,6 +40,7 @@ class TeacherHintResult:
     model: str
     latency_ms: int
     sha256: str
+    level: str = HintLevel.L3_ORACLE.value
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -92,30 +71,8 @@ def _private_hint_note(
 
 
 def _validate_natural_note(plan: str, payload: dict[str, Any]) -> None:
-    """Reject truncated or action-serialization-like closed-model notes."""
-    if not plan:
-        raise ValueError("closed-model hinter returned an empty note")
-    if plan[-1] not in ".!?。！？":
-        raise ValueError("closed-model hinter returned an incomplete note")
-    if len(plan.split()) > 220:
-        raise ValueError("closed-model hinter returned an overlong note")
-    if "```" in plan or plan.lstrip().startswith(("{", "[")):
-        raise ValueError("closed-model hinter returned structured output")
-    lines = [line.strip() for line in plan.splitlines() if line.strip()]
-    if any(_RIGID_HEADING.match(line) or _LIST_ITEM.match(line) for line in lines):
-        raise ValueError("closed-model hinter returned a rigid template")
-
-    tool_names = []
-    for schema in payload.get("available_tools") or []:
-        function = schema.get("function") if isinstance(schema, dict) else None
-        name = function.get("name") if isinstance(function, dict) else None
-        if isinstance(name, str) and name:
-            tool_names.append(name)
-    for name in tool_names:
-        if re.search(rf"(?<!\w){re.escape(name)}(?!\w)", plan):
-            raise ValueError(
-                "closed-model hinter copied an exact tool name into the note"
-            )
+    """Compatibility validator for the historical L3 contract."""
+    validate_hint_note(plan, payload, HintLevel.L3_ORACLE)
 
 
 def format_teacher_query_with_hint(
@@ -195,7 +152,15 @@ class ClosedModelTeacherHinter:
             max_retries=0,
         )
 
-    def hint(self, payload: dict[str, Any]) -> TeacherHintResult:
+    def hint(
+        self,
+        payload: dict[str, Any],
+        level: HintLevel | str = HintLevel.L3_ORACLE,
+    ) -> TeacherHintResult:
+        parsed_level = HintLevel.parse(level)
+        if parsed_level is HintLevel.L0_NONE:
+            raise ValueError("L0 must bypass the hinter API")
+        request_payload = prepare_hint_payload(payload, parsed_level)
         started = time.monotonic()
         last_error = None
         for attempt in range(self.endpoint.retries):
@@ -203,26 +168,33 @@ class ClosedModelTeacherHinter:
                 response = self.client.chat.completions.create(
                     model=self.endpoint.model,
                     messages=[
-                        {"role": "system", "content": HINTER_INSTRUCTION},
+                        {
+                            "role": "system",
+                            "content": hint_instruction(parsed_level),
+                        },
                         {
                             "role": "user",
-                            "content": json.dumps(payload, ensure_ascii=False),
+                            "content": json.dumps(request_payload, ensure_ascii=False),
                         },
                     ],
                     temperature=0,
                     max_tokens=self.endpoint.max_tokens,
                 )
                 plan = (response.choices[0].message.content or "").strip()
-                _validate_natural_note(plan, payload)
+                validate_hint_note(plan, request_payload, parsed_level)
                 hint = {"plan": plan}
                 canonical = json.dumps(
-                    hint, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                    {"level": parsed_level.value, "hint": hint},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
                 )
                 return TeacherHintResult(
                     hint=hint,
                     model=self.endpoint.model,
                     latency_ms=round((time.monotonic() - started) * 1000),
                     sha256=hashlib.sha256(canonical.encode()).hexdigest()[:16],
+                    level=parsed_level.value,
                 )
             except Exception as error:
                 last_error = error
@@ -262,6 +234,7 @@ class HintedTeacherAgent(LLMAgent):
         hinter=None,
         initial_hint: TeacherHintResult | None = None,
         refresh_hint_each_turn: bool = False,
+        hint_level: HintLevel | str = HintLevel.L3_ORACLE,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -270,6 +243,7 @@ class HintedTeacherAgent(LLMAgent):
         self.hint_records: list[dict] = []
         self._session_hint = initial_hint
         self.refresh_hint_each_turn = refresh_hint_each_turn
+        self.hint_level = HintLevel.parse(hint_level)
 
     def _hint_payload(self, history: list[APICompatibleMessage]) -> dict[str, Any]:
         return {
@@ -282,14 +256,21 @@ class HintedTeacherAgent(LLMAgent):
 
     def hint_for_history(
         self, history: list[APICompatibleMessage]
-    ) -> TeacherHintResult:
-        result = self.hinter.hint(self._hint_payload(history))
+    ) -> TeacherHintResult | None:
+        if self.hint_level is HintLevel.L0_NONE:
+            return None
+        payload = self._hint_payload(history)
+        try:
+            result = self.hinter.hint(payload, self.hint_level)
+        except TypeError:
+            # Test doubles and legacy hinter adapters may only accept payload.
+            result = self.hinter.hint(prepare_hint_payload(payload, self.hint_level))
         self.hint_records.append(
             {"turn": len(self.hint_records) + 1, **result.to_dict()}
         )
         return result
 
-    def system_prompt_with_hint(self, result: TeacherHintResult) -> str:
+    def system_prompt_with_hint(self, result: TeacherHintResult | None) -> str:
         base_prompt = SYSTEM_PROMPT.format(
             domain_policy=self.domain_policy,
             agent_instruction=AGENT_INSTRUCTION,
@@ -298,14 +279,16 @@ class HintedTeacherAgent(LLMAgent):
 
     def plan_for_session(
         self, history: list[APICompatibleMessage]
-    ) -> TeacherHintResult:
+    ) -> TeacherHintResult | None:
+        if self.hint_level is HintLevel.L0_NONE:
+            return None
         if self._session_hint is None:
             self._session_hint = self.hint_for_history(history)
         return self._session_hint
 
     def plan_for_history(
         self, history: list[APICompatibleMessage]
-    ) -> TeacherHintResult:
+    ) -> TeacherHintResult | None:
         """Return the plan view configured for this rollout.
 
         Collection creates a fresh one-action Teacher branch at every Student
@@ -320,7 +303,7 @@ class HintedTeacherAgent(LLMAgent):
 
     def hinted_system_prompt_for_history(
         self, history: list[APICompatibleMessage]
-    ) -> tuple[str, TeacherHintResult]:
+    ) -> tuple[str, TeacherHintResult | None]:
         result = self.plan_for_history(history)
         return self.system_prompt_with_hint(result), result
 
