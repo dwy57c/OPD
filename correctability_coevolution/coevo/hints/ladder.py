@@ -161,6 +161,39 @@ def _oracle_literals(payload: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(sorted(values, key=len, reverse=True))
 
 
+def _payload_tool_names(payload: Mapping[str, Any]) -> tuple[str, ...]:
+    names = []
+    for schema in payload.get("available_tools") or []:
+        function = schema.get("function") if isinstance(schema, dict) else None
+        name = function.get("name") if isinstance(function, dict) else None
+        if isinstance(name, str) and name:
+            names.append(name)
+    return tuple(names)
+
+
+def hint_fact_leaks(plan: str, payload: Mapping[str, Any]) -> tuple[str, ...]:
+    """Return machine-checkable instance facts leaked by a hint."""
+
+    findings: list[str] = []
+    if _DATE.search(plan):
+        findings.append("date")
+    if _AMOUNT.search(plan):
+        findings.append("amount")
+    if _IDENTIFIER.search(plan):
+        findings.append("identifier")
+    for name in _payload_tool_names(payload):
+        if re.search(rf"(?<!\w){re.escape(name)}(?!\w)", plan):
+            findings.append(f"tool_name:{name}")
+            break
+    lowered = plan.casefold()
+    copied = [
+        value for value in _oracle_literals(payload) if value.casefold() in lowered
+    ]
+    if copied:
+        findings.append(f"oracle_literal:{copied[0]}")
+    return tuple(findings)
+
+
 def validate_hint_note(
     plan: str,
     payload: Mapping[str, Any],
@@ -191,26 +224,17 @@ def validate_hint_note(
     if any(_RIGID_HEADING.match(line) or _LIST_ITEM.match(line) for line in lines):
         raise ValueError("closed-model hinter returned a rigid template")
 
-    tool_names = []
-    for schema in payload.get("available_tools") or []:
-        function = schema.get("function") if isinstance(schema, dict) else None
-        name = function.get("name") if isinstance(function, dict) else None
-        if isinstance(name, str) and name:
-            tool_names.append(name)
-    for name in tool_names:
+    for name in _payload_tool_names(payload):
         if re.search(rf"(?<!\w){re.escape(name)}(?!\w)", plan):
             raise ValueError("closed-model hinter copied an exact tool name")
 
     if parsed in {HintLevel.L1_POLICY, HintLevel.L2_PROCEDURAL}:
-        if _DATE.search(plan):
-            raise ValueError(f"{parsed.value} hint contains a task-specific date")
-        if _AMOUNT.search(plan):
-            raise ValueError(f"{parsed.value} hint contains a task-specific amount")
-        if _IDENTIFIER.search(plan):
-            raise ValueError(f"{parsed.value} hint contains a task-specific identifier")
-        lowered = plan.casefold()
-        copied = [value for value in _oracle_literals(payload) if value.casefold() in lowered]
-        if copied:
+        findings = tuple(
+            finding
+            for finding in hint_fact_leaks(plan, payload)
+            if not finding.startswith("tool_name:")
+        )
+        if findings:
             raise ValueError(
-                f"{parsed.value} hint copied an oracle literal: {copied[0]!r}"
+                f"{parsed.value} hint failed the fact audit: {findings[0]}"
             )

@@ -67,13 +67,15 @@ For a fixed public state `s`, fixed current Student `theta`, fixed standard
 action trajectory `tau*`, and candidate hint `h`, the only hinter GRPO reward is
 
 ```text
-useful(h) = log p_theta(tau* | s, h) - log p_theta(tau* | s)
-reward(h) = useful(h) - lambda_copy * D_t(s, operation_theta(s,h), h)
-                       - beta_len * tokens(h)
+useful(h) = [log p_theta(tau* | s, h) - log p_theta(tau* | s)] / |tau*|
+copy(h)   = max(0, 2 * [D_t(s, operation_theta(s,h), h) - 0.5])
+reward(h) = useful(h) - lambda_copy * copy(h) - beta_len * tokens(h)
 ```
 
-The usefulness term requires exactly two teacher-forced Student scoring views
-and no environment rollout. Separately, each GRPO candidate hint produces one
+The usefulness term is a per-target-token mean, requires exactly two
+teacher-forced Student scoring views, and uses no environment rollout.
+Chance-level discriminator output is free rather than penalized. Separately,
+each GRPO candidate hint produces one
 actual frozen-Student macro-action as its operation record. The copying
 discriminator has the same base-model scale as the Student plus one scalar head.
 It sees `(public state, operation record, candidate hint)` and is trained with
@@ -94,6 +96,11 @@ reward. Hint length is charged directly, so as the Student improves a long hint
 must earn enough additional log-probability gain to pay for every extra token.
 This is the mechanism expected to produce fading.
 
+Machine-checkable dates, amounts, identifiers, exact tool names, and copied
+oracle literals pass through a public rule audit before the learned reward. A
+rule hit caps the total reward at a fixed negative floor, so copying a concrete
+value cannot pay even when it sharply increases standard-action likelihood.
+
 The only alternating loop uses one pass@k panel per round. A hinter candidate
 created in round `t` is accepted or rejected after the Student has actually
 distilled from it at the start of round `t+1`:
@@ -110,7 +117,9 @@ carry the new hinter candidate into the next Student segment for real acceptance
 
 pass@k is used only by the scheduler and acceptance fuse. The measured
 cross-round distillation gain is logged and used for rollback but is never an
-optimizer reward.
+optimizer reward. Rollback uses a binomial standard-error tolerance for the
+panel mean and a maximum fraction of materially regressed scenarios, rather
+than treating any single `2/8` drop as decisive.
 
 Three gates protect the copying signal:
 

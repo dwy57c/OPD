@@ -137,7 +137,8 @@ Then freeze that discriminator and run the only hinter reward:
 export COEVO_HINTER_BASE_MODEL=/path/to/open-hinter
 export COEVO_HINTER_DISCRIMINATOR_URL=http://127.0.0.1:8010
 export COEVO_HINTER_COPY_WEIGHT=1.0
-export COEVO_HINTER_LENGTH_WEIGHT=0.01
+export COEVO_HINTER_LENGTH_WEIGHT=0.002
+export COEVO_HINTER_RULE_LEAK_FLOOR=1.0
 export COEVO_HINTER_ANCHOR_BETA=0.01
 export COEVO_HINTER_REWARD_TRACE_PATH=artifacts/hinter_reward_round_t.jsonl
 bash scripts/train_hinter_grpo.sh \

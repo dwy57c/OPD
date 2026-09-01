@@ -34,12 +34,29 @@ class PassKSnapshot:
 
 @dataclass(frozen=True)
 class AcceptanceRule:
-    mean_tolerance: float = 0.0
-    per_scenario_tolerance: float = 0.125
+    """Statistically calibrated rollback for the pass@k panel."""
+
+    mean_tolerance: float | None = None
+    mean_std_multiplier: float = 1.65
+    per_scenario_drop: float = 0.25
+    max_regressed_fraction: float = 0.35
 
     def __post_init__(self) -> None:
-        if self.mean_tolerance < 0 or self.per_scenario_tolerance < 0:
-            raise ValueError("acceptance tolerances must be non-negative")
+        if self.mean_tolerance is not None and self.mean_tolerance < 0:
+            raise ValueError("mean tolerance must be non-negative")
+        if self.mean_std_multiplier <= 0:
+            raise ValueError("mean_std_multiplier must be positive")
+        if not 0 < self.per_scenario_drop <= 1:
+            raise ValueError("per_scenario_drop must be in (0, 1]")
+        if not 0 < self.max_regressed_fraction <= 1:
+            raise ValueError("max_regressed_fraction must be in (0, 1]")
+
+    def _mean_tolerance(self, baseline: PassKSnapshot) -> float:
+        if self.mean_tolerance is not None:
+            return self.mean_tolerance
+        rate = min(max(baseline.mean, 1e-6), 1.0 - 1e-6)
+        trials = len(baseline.scores) * baseline.k
+        return self.mean_std_multiplier * (rate * (1.0 - rate) / trials) ** 0.5
 
     def regressions(
         self, baseline: PassKSnapshot, measured: PassKSnapshot
@@ -47,14 +64,21 @@ class AcceptanceRule:
         if baseline.k != measured.k or set(baseline.scores) != set(measured.scores):
             raise ValueError("hinter acceptance requires the identical pass@k panel")
         failures = []
-        if measured.mean < baseline.mean - self.mean_tolerance:
-            failures.append("mean_pass_at_k")
-        failures.extend(
-            f"scenario:{scenario_id}"
+        tolerance = self._mean_tolerance(baseline)
+        if measured.mean < baseline.mean - tolerance:
+            failures.append(f"mean_pass_at_k:-{baseline.mean - measured.mean:.4f}")
+        regressed = [
+            scenario_id
             for scenario_id in baseline.scores
             if float(measured.scores[scenario_id])
-            < float(baseline.scores[scenario_id]) - self.per_scenario_tolerance
-        )
+            <= float(baseline.scores[scenario_id]) - self.per_scenario_drop
+        ]
+        fraction = len(regressed) / len(baseline.scores)
+        if fraction > self.max_regressed_fraction:
+            failures.append(
+                f"scenario_fraction:{fraction:.2f}>"
+                f"{self.max_regressed_fraction:.2f}"
+            )
         return tuple(failures)
 
 

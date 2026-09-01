@@ -14,6 +14,7 @@ from swift.rewards import ORM
 
 from coevo.artifacts import assistant_action_hash, canonical_hash
 from coevo.config import InfraConfig
+from coevo.hints import hint_fact_leaks
 from coevo.models.hinted_teacher import format_teacher_system_prompt_with_hint
 from coevo.scoring.stage_gap import SparseTargetView, TeacherTargetBuilder
 
@@ -24,21 +25,27 @@ from .discriminator_data import format_discriminator_input
 @dataclass(frozen=True)
 class HinterRewardConfig:
     copying_weight: float = 1.0
-    length_weight: float = 0.01
+    length_weight: float = 0.002
     max_hint_tokens: int = 192
+    rule_leak_floor: float = 1.0
 
     def __post_init__(self) -> None:
         if self.copying_weight < 0 or self.length_weight < 0:
             raise ValueError("hinter reward weights must be non-negative")
         if self.max_hint_tokens < 1:
             raise ValueError("max_hint_tokens must be positive")
+        if self.rule_leak_floor <= 0:
+            raise ValueError("rule_leak_floor must be positive")
 
     @classmethod
     def from_env(cls) -> "HinterRewardConfig":
         return cls(
             copying_weight=float(os.getenv("COEVO_HINTER_COPY_WEIGHT", "1.0")),
-            length_weight=float(os.getenv("COEVO_HINTER_LENGTH_WEIGHT", "0.01")),
+            length_weight=float(os.getenv("COEVO_HINTER_LENGTH_WEIGHT", "0.002")),
             max_hint_tokens=int(os.getenv("COEVO_HINTER_MAX_HINT_TOKENS", "192")),
+            rule_leak_floor=float(
+                os.getenv("COEVO_HINTER_RULE_LEAK_FLOOR", "1.0")
+            ),
         )
 
 
@@ -77,11 +84,18 @@ class TeacherForcedUsefulness:
     target_token_count: int
     probability_trace: TeacherForcedProbabilityTrace
 
+    @property
+    def per_token_gain(self) -> float:
+        if self.target_token_count < 1:
+            raise ValueError("usefulness requires at least one target token")
+        return self.log_probability_gain / self.target_token_count
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "unhinted_log_probability": self.unhinted_log_probability,
             "hinted_log_probability": self.hinted_log_probability,
             "log_probability_gain": self.log_probability_gain,
+            "per_token_gain": self.per_token_gain,
             "target_token_count": self.target_token_count,
             "probability_trace": self.probability_trace.to_dict(),
         }
@@ -94,10 +108,14 @@ class HinterRewardBreakdown:
     hint_tokens: int
     copying_weight: float
     length_weight: float
+    rule_leaks: tuple[str, ...] = ()
+    rule_leak_floor: float = 1.0
 
     @property
     def copying_penalty(self) -> float:
-        return self.copying_weight * self.copying_probability
+        return self.copying_weight * max(
+            0.0, 2.0 * (self.copying_probability - 0.5)
+        )
 
     @property
     def length_penalty(self) -> float:
@@ -105,15 +123,18 @@ class HinterRewardBreakdown:
 
     @property
     def reward(self) -> float:
-        return self.usefulness - self.copying_penalty - self.length_penalty
+        base = self.usefulness - self.copying_penalty - self.length_penalty
+        if self.rule_leaks:
+            return min(base, -self.rule_leak_floor)
+        return base
 
-    def to_dict(self) -> dict[str, float | int]:
-        return {
-            **asdict(self),
-            "copying_penalty": self.copying_penalty,
-            "length_penalty": self.length_penalty,
-            "reward": self.reward,
-        }
+    def to_dict(self) -> dict[str, Any]:
+        value = asdict(self)
+        value["rule_leaks"] = list(self.rule_leaks)
+        value["copying_penalty"] = self.copying_penalty
+        value["length_penalty"] = self.length_penalty
+        value["reward"] = self.reward
+        return value
 
 
 def score_hinter_hint(
@@ -122,6 +143,7 @@ def score_hinter_hint(
     copying_probability: float,
     hint_tokens: int,
     config: HinterRewardConfig,
+    rule_leaks: Sequence[str] = (),
 ) -> HinterRewardBreakdown:
     if not 0 <= copying_probability <= 1:
         raise ValueError("copying_probability must be in [0, 1]")
@@ -135,6 +157,8 @@ def score_hinter_hint(
         hint_tokens=int(hint_tokens),
         copying_weight=config.copying_weight,
         length_weight=config.length_weight,
+        rule_leaks=tuple(str(value) for value in rule_leaks),
+        rule_leak_floor=config.rule_leak_floor,
     )
 
 
@@ -399,7 +423,18 @@ class HinterCompositeReward(ORM):
     def _item(kwargs: Mapping[str, Any], key: str, index: int, count: int) -> Any:
         value = kwargs.get(key)
         if (
-            key in {"public_state", "student_visible_messages", "tools"}
+            key == "privileged_context"
+            and isinstance(value, list)
+            and len(value) == count
+        ):
+            return value[index]
+        if (
+            key
+            in {
+                "public_state",
+                "student_visible_messages",
+                "tools",
+            }
             and isinstance(value, list)
             and value
             and isinstance(value[0], Mapping)
@@ -429,6 +464,7 @@ class HinterCompositeReward(ORM):
                     "public_state",
                     "student_visible_messages",
                     "tools",
+                    "privileged_context",
                 )
             }
             validate_hinter_reward_row(row)
@@ -446,6 +482,16 @@ class HinterCompositeReward(ORM):
             hint_tokens = len(
                 self.hinter_tokenizer.encode(hint, add_special_tokens=False)
             )
+            privileged = row.get("privileged_context")
+            leak_payload = {
+                "available_tools": row.get("tools") or [],
+                "authoritative_oracle_steps": (
+                    privileged.get("authoritative_oracle_steps")
+                    if isinstance(privileged, Mapping)
+                    else ""
+                ),
+            }
+            rule_leaks = hint_fact_leaks(hint, leak_payload)
             candidates.append(
                 {
                     "row": row,
@@ -453,6 +499,7 @@ class HinterCompositeReward(ORM):
                     "usefulness": usefulness,
                     "student_behavior": student_behavior,
                     "hint_tokens": hint_tokens,
+                    "rule_leaks": rule_leaks,
                 }
             )
 
@@ -464,9 +511,16 @@ class HinterCompositeReward(ORM):
         for state_hash, indexes in grouped.items():
             group_hints = [str(candidates[index]["hint"]) for index in indexes]
             if len(set(group_hints)) < 2:
-                raise ValueError(
-                    f"GRPO state {state_hash!r} needs at least two distinct hints"
-                )
+                for index in indexes:
+                    rewards[index] = 0.0
+                    self._record(
+                        {
+                            "state_hash": state_hash,
+                            "degenerate_group": True,
+                            "hint": candidates[index]["hint"],
+                        }
+                    )
+                continue
             for index in indexes:
                 candidate = candidates[index]
                 copying = self.discriminator.copy_probability(
@@ -477,10 +531,11 @@ class HinterCompositeReward(ORM):
                 )
                 usefulness = candidate["usefulness"]
                 breakdown = score_hinter_hint(
-                    usefulness=usefulness.log_probability_gain,
+                    usefulness=usefulness.per_token_gain,
                     copying_probability=copying,
                     hint_tokens=int(candidate["hint_tokens"]),
                     config=self.reward_config,
+                    rule_leaks=candidate["rule_leaks"],
                 )
                 rewards[index] = breakdown.reward
                 self._record(

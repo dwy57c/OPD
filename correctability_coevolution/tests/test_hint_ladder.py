@@ -3,7 +3,12 @@ from tau2.data_model.message import AssistantMessage, UserMessage
 from tau2.run import get_tasks
 
 from coevo.config import HintEndpoint
-from coevo.hints import HintLevel, prepare_hint_payload, validate_hint_note
+from coevo.hints import (
+    HintLevel,
+    hint_fact_leaks,
+    prepare_hint_payload,
+    validate_hint_note,
+)
 from coevo.models.hinted_teacher import HintedTeacherAgent
 
 
@@ -30,6 +35,22 @@ def test_l2_rejects_instance_values_and_accepts_fact_to_procedure():
     ):
         with pytest.raises(ValueError):
             validate_hint_note(invalid, payload(), HintLevel.L2_PROCEDURAL)
+
+
+def test_public_fact_audit_is_reusable_by_grpo_reward():
+    findings = hint_fact_leaks(
+        "Use get_booking_details for ABC123 on 2027-05-03 and quote $75.",
+        payload(),
+    )
+    assert "date" in findings
+    assert "amount" in findings
+    assert "identifier" in findings
+    assert "tool_name:get_booking_details" in findings
+    assert any(value.startswith("oracle_literal:") for value in findings)
+    assert hint_fact_leaks(
+        "Ask for the lookup key, retrieve the record, and confirm the result.",
+        payload(),
+    ) == ()
 
 
 def test_l1_has_strict_length_and_never_receives_oracle_steps():

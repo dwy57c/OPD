@@ -38,15 +38,15 @@ def sparse(actual_logs):
 def test_reward_is_usefulness_minus_copying_minus_token_length():
     result = score_hinter_hint(
         usefulness=3.0,
-        copying_probability=0.25,
+        copying_probability=0.75,
         hint_tokens=4,
         config=HinterRewardConfig(
             copying_weight=2.0, length_weight=0.1, max_hint_tokens=10
         ),
     )
-    assert result.copying_penalty == pytest.approx(0.5)
+    assert result.copying_penalty == pytest.approx(1.0)
     assert result.length_penalty == pytest.approx(0.4)
-    assert result.reward == pytest.approx(2.1)
+    assert result.reward == pytest.approx(1.6)
     with pytest.raises(ValueError, match="hard token cap"):
         score_hinter_hint(
             usefulness=100,
@@ -87,6 +87,7 @@ def test_usefulness_is_two_teacher_forced_views_on_same_standard_action():
     assert result.unhinted_log_probability == pytest.approx(-5.0)
     assert result.hinted_log_probability == pytest.approx(-2.0)
     assert result.log_probability_gain == pytest.approx(3.0)
+    assert result.per_token_gain == pytest.approx(1.5)
     assert result.probability_trace.actual_token_logprobs == pytest.approx(
         (-1.0, -1.0)
     )
@@ -162,6 +163,7 @@ def test_grpo_reward_compares_each_behavior_to_same_state_candidate_hints():
 
     class Utility:
         log_probability_gain = 2.0
+        per_token_gain = 1.0
 
         @staticmethod
         def to_dict():
@@ -194,9 +196,119 @@ def test_grpo_reward_compares_each_behavior_to_same_state_candidate_hints():
         student_visible_messages=[messages, messages],
         tools=[[], []],
     )
-    assert values == pytest.approx([1.05, 1.05])
+    assert values == pytest.approx([0.3, 0.3])
     assert calls[0]["alternative_hints"] == ["short hint", "different hint"]
     assert calls[0]["student_behavior"] == {"operation": "short hint"}
+
+
+def test_explicit_copy_anchor_is_net_negative():
+    config = HinterRewardConfig()
+    breakdown = score_hinter_hint(
+        usefulness=0.8,
+        copying_probability=0.95,
+        hint_tokens=80,
+        config=config,
+        rule_leaks=("identifier",),
+    )
+    assert breakdown.reward <= -config.rule_leak_floor
+
+
+def test_rule_clean_but_detected_hint_loses_to_clean_hint():
+    config = HinterRewardConfig()
+    detected = score_hinter_hint(
+        usefulness=0.3,
+        copying_probability=0.95,
+        hint_tokens=80,
+        config=config,
+    )
+    clean = score_hinter_hint(
+        usefulness=0.3,
+        copying_probability=0.5,
+        hint_tokens=80,
+        config=config,
+    )
+    assert detected.reward < clean.reward
+    assert clean.copying_penalty == 0.0
+
+
+def test_degenerate_group_returns_zero_rewards():
+    reward = object.__new__(HinterCompositeReward)
+    reward.reward_config = HinterRewardConfig()
+
+    class Utility:
+        log_probability_gain = 1.0
+        per_token_gain = 0.5
+
+        @staticmethod
+        def to_dict():
+            return {"per_token_gain": 0.5}
+
+    reward.usefulness = SimpleNamespace(score=lambda **_kwargs: Utility())
+    reward.student_behavior = SimpleNamespace(
+        generate=lambda hint, **_kwargs: {"operation": hint}
+    )
+    reward.discriminator = SimpleNamespace(
+        copy_probability=lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("degenerate group called discriminator")
+        )
+    )
+    reward.hinter_tokenizer = SimpleNamespace(
+        encode=lambda hint, add_special_tokens=False: hint.split()
+    )
+    reward.trace_path = ""
+    reward._trace_lock = None
+    messages = [
+        {"role": "system", "content": "policy"},
+        {"role": "assistant", "content": "standard"},
+    ]
+    assert reward(
+        ["same hint", "same hint"],
+        state_hash=["s", "s"],
+        public_state=[[{"role": "user", "content": "x"}]] * 2,
+        student_visible_messages=[messages, messages],
+        tools=[[], []],
+    ) == [0.0, 0.0]
+
+
+def test_reward_callback_applies_rule_floor_from_privileged_context():
+    reward = object.__new__(HinterCompositeReward)
+    reward.reward_config = HinterRewardConfig(rule_leak_floor=1.0)
+
+    class Utility:
+        log_probability_gain = 1.6
+        per_token_gain = 0.8
+
+        @staticmethod
+        def to_dict():
+            return {"per_token_gain": 0.8}
+
+    reward.usefulness = SimpleNamespace(score=lambda **_kwargs: Utility())
+    reward.student_behavior = SimpleNamespace(
+        generate=lambda hint, **_kwargs: {"operation": hint}
+    )
+    reward.discriminator = SimpleNamespace(copy_probability=lambda **_kwargs: 0.5)
+    reward.hinter_tokenizer = SimpleNamespace(
+        encode=lambda hint, add_special_tokens=False: hint.split()
+    )
+    reward.trace_path = ""
+    reward._trace_lock = None
+    messages = [
+        {"role": "system", "content": "policy"},
+        {"role": "assistant", "content": "standard"},
+    ]
+    values = reward(
+        ["Use booking ABC123.", "Ask for the booking key."],
+        state_hash=["s", "s"],
+        public_state=[[{"role": "user", "content": "x"}]] * 2,
+        student_visible_messages=[messages, messages],
+        tools=[[], []],
+        privileged_context=[
+            {"authoritative_oracle_steps": "Use booking ABC123"},
+            {"authoritative_oracle_steps": "Use booking ABC123"},
+        ],
+    )
+    assert values[0] <= -1.0
+    assert values[1] > 0
 
 
 def test_grpo_dataset_uses_one_fixed_l3_standard_action_per_state():

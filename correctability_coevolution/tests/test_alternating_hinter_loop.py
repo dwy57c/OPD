@@ -79,7 +79,11 @@ def test_one_pass_measurement_both_rejects_prior_hinter_and_schedules():
         rollback_hinter=lambda candidate, previous: events.append(
             ("rollback-hinter", candidate, previous)
         ),
-        acceptance=AcceptanceRule(mean_tolerance=0.0, per_scenario_tolerance=0.125),
+        acceptance=AcceptanceRule(
+            mean_tolerance=0.0,
+            per_scenario_drop=0.25,
+            max_regressed_fraction=0.35,
+        ),
     )
     result = loop.run_round(
         round_index=3,
@@ -110,6 +114,9 @@ def test_one_pass_measurement_both_rejects_prior_hinter_and_schedules():
     assert result.measured_distillation_gain == -0.25
     assert result.next_hinter_candidate == "next-hinter-candidate"
     assert result.discriminator_training_examples == 2
+    assert any(
+        reason.startswith("mean_pass_at_k") for reason in result.rollback_reasons
+    )
     # On rollback the scheduler consumes the accepted baseline, not the bad result.
     assert ("schedule", 0.75) in events
 
@@ -160,3 +167,18 @@ def test_acceptance_requires_identical_pass_panel():
         assert "identical" in str(error)
     else:
         raise AssertionError("mismatched pass@k panels were accepted")
+
+
+def test_acceptance_ignores_one_noisy_scenario_but_rejects_panel_regression():
+    baseline = PassKSnapshot({str(index): 0.5 for index in range(20)}, 8)
+    one_drop = dict(baseline.scores)
+    one_drop["0"] = 0.25
+    rule = AcceptanceRule()
+    assert rule.regressions(baseline, PassKSnapshot(one_drop, 8)) == ()
+
+    broad_drop = dict(baseline.scores)
+    for index in range(8):
+        broad_drop[str(index)] = 0.25
+    failures = rule.regressions(baseline, PassKSnapshot(broad_drop, 8))
+    assert any(value.startswith("mean_pass_at_k") for value in failures)
+    assert any(value.startswith("scenario_fraction") for value in failures)
