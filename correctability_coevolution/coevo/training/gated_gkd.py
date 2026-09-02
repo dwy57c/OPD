@@ -65,7 +65,12 @@ def validate_student_training_row(row: dict) -> TeacherTargetRecord:
             f"training_target must be {TRAINING_TARGET!r}; "
             f"got {row.get('training_target')!r}"
         )
-    HintLevel.parse(row.get("hint_level", HintLevel.L3_ORACLE.value))
+    dataset_level = str(row.get("hint_level", HintLevel.L3_ORACLE.value))
+    sample_level = HintLevel.parse(row.get("sample_hint_level", dataset_level))
+    if dataset_level not in {"MIXED", sample_level.value}:
+        raise ValueError(
+            "row hint-level contract must equal sample_hint_level or MIXED"
+        )
     messages = row.get("messages")
     if not isinstance(messages, list):
         raise ValueError("schema v4 requires a messages list")

@@ -21,6 +21,8 @@ from coevo.hinter_training import (
 )
 from coevo.scoring.stage_gap import SparseTargetView
 from coevo.training.gated_gkd import truncate_rows_to_active_token_budget
+from coevo.hinter_training.behavior_discriminator import score_texts
+from scripts.build_copying_discriminator_dataset import load_reward_trace
 
 
 def sparse(actual_logs):
@@ -106,6 +108,24 @@ def test_discriminator_negatives_shuffle_only_hint_within_state():
     assert pairs[0].student_behavior == {"action": "a"}
 
 
+def test_discriminator_loader_skips_degenerate_reward_trace_rows(tmp_path):
+    path = tmp_path / "reward.jsonl"
+    path.write_text(
+        "\n".join(
+            [
+                '{"state_hash":"s","degenerate_group":true,"hint":"same"}',
+                '{"state_hash":"s","public_state":{},"hint":"a",'
+                '"student_behavior":{"action":"a"}}',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    samples = load_reward_trace(path)
+    assert len(samples) == 1
+    assert samples[0].hint == "a"
+
+
 def test_pairwise_head_uses_logistic_ranking_and_control_gates():
     loss = pairwise_ranking_loss(torch.tensor([2.0]), torch.tensor([-1.0]))
     assert loss.item() < 0.1
@@ -113,9 +133,11 @@ def test_pairwise_head_uses_logistic_ranking_and_control_gates():
     passing = DiscriminatorControlReport(
         ordinary_pair_accuracy=0.8,
         explicit_copy_accuracy=1.0,
+        explicit_copy_natural_accuracy=0.9,
         useless_mean_distance_from_chance=0.05,
         ordinary_pairs=10,
         explicit_copy_pairs=4,
+        explicit_copy_natural_pairs=4,
         useless_pairs=4,
     )
     DiscriminatorGate().validate(passing)
@@ -124,20 +146,62 @@ def test_pairwise_head_uses_logistic_ranking_and_control_gates():
             DiscriminatorControlReport(
                 ordinary_pair_accuracy=0.8,
                 explicit_copy_accuracy=0.5,
+                explicit_copy_natural_accuracy=0.9,
                 useless_mean_distance_from_chance=0.05,
                 ordinary_pairs=10,
                 explicit_copy_pairs=4,
+                explicit_copy_natural_pairs=4,
                 useless_pairs=4,
             )
         )
+
+
+def test_discriminator_scoring_is_chunked_to_avoid_oom():
+    calls = []
+
+    class Tokenizer:
+        def __call__(self, values, **_kwargs):
+            calls.append(len(values))
+            return {"input_ids": torch.ones((len(values), 1), dtype=torch.long)}
+
+    class Model:
+        @staticmethod
+        def parameters():
+            return iter([torch.nn.Parameter(torch.zeros(1))])
+
+        @staticmethod
+        def __call__(**kwargs):
+            size = kwargs["input_ids"].shape[0]
+            return SimpleNamespace(logits=torch.zeros((size, 1)))
+
+    scores = score_texts(
+        Model(), Tokenizer(), [str(index) for index in range(65)], max_length=8192
+    )
+    assert len(scores) == 65
+    assert calls == [32, 32, 1]
     with pytest.raises(ValueError, match="useless-hint"):
         DiscriminatorGate().validate(
             DiscriminatorControlReport(
                 ordinary_pair_accuracy=0.8,
                 explicit_copy_accuracy=1.0,
+                explicit_copy_natural_accuracy=0.9,
                 useless_mean_distance_from_chance=0.4,
                 ordinary_pairs=10,
                 explicit_copy_pairs=4,
+                explicit_copy_natural_pairs=4,
+                useless_pairs=4,
+            )
+        )
+    with pytest.raises(ValueError, match="natural-copy"):
+        DiscriminatorGate().validate(
+            DiscriminatorControlReport(
+                ordinary_pair_accuracy=0.8,
+                explicit_copy_accuracy=1.0,
+                explicit_copy_natural_accuracy=0.5,
+                useless_mean_distance_from_chance=0.05,
+                ordinary_pairs=10,
+                explicit_copy_pairs=4,
+                explicit_copy_natural_pairs=4,
                 useless_pairs=4,
             )
         )

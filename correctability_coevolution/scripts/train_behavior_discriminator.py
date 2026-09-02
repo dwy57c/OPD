@@ -87,6 +87,7 @@ def main() -> None:
     parser.add_argument("--deepspeed")
     parser.add_argument("--report-to", default="wandb")
     parser.add_argument("--minimum-explicit-copy-accuracy", type=float, default=0.9)
+    parser.add_argument("--minimum-natural-copy-accuracy", type=float, default=0.8)
     parser.add_argument("--maximum-useless-distance-from-chance", type=float, default=0.1)
     args = parser.parse_args()
     if args.output_dir.exists() and any(args.output_dir.iterdir()):
@@ -155,6 +156,7 @@ def main() -> None:
     report = evaluate_pair_scores(controls, positive_scores, negative_scores)
     gate = DiscriminatorGate(
         minimum_explicit_copy_accuracy=args.minimum_explicit_copy_accuracy,
+        minimum_natural_copy_accuracy=args.minimum_natural_copy_accuracy,
         maximum_useless_distance_from_chance=args.maximum_useless_distance_from_chance,
     )
     gate.validate(report)

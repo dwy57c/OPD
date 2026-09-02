@@ -4,11 +4,13 @@ from tau2.run import get_tasks
 from coevo.config import HintEndpoint, InfraConfig, ModelEndpoint
 from coevo.models import hinted_teacher as hinted_module
 from coevo.models.hinted_teacher import (
+    ClosedModelTeacherHinter,
     HintedTeacherAgent,
     TeacherHintResult,
     _validate_natural_note,
     format_teacher_system_prompt_with_hint,
 )
+from types import SimpleNamespace
 
 
 class FakeHinter:
@@ -167,3 +169,85 @@ def test_natural_note_validation_rejects_tool_names_and_truncation():
             pass
         else:
             raise AssertionError(f"invalid natural note was accepted: {invalid}")
+
+
+def test_closed_hinter_retries_validation_with_feedback_and_temperature(monkeypatch):
+    endpoint = HintEndpoint(
+        "teacher", "http://hinter/v1", "key", retries=2
+    )
+    hinter = ClosedModelTeacherHinter(endpoint)
+    calls = []
+    outputs = iter(
+        [
+            "Call get_booking_details now.",
+            "Ask for the missing lookup key, retrieve the record through the "
+            "authorized source, and confirm the result before proceeding.",
+        ]
+    )
+
+    def create(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content=next(outputs))
+                )
+            ]
+        )
+
+    hinter.client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    )
+    monkeypatch.setattr("coevo.models.hinted_teacher.time.sleep", lambda *_args: None)
+    result = hinter.hint(
+        {
+            "available_tools": [
+                {
+                    "type": "function",
+                    "function": {"name": "get_booking_details"},
+                }
+            ]
+        },
+        "L2_PROCEDURAL",
+    )
+    assert result.error is None
+    assert calls[0]["temperature"] == 0
+    assert calls[1]["temperature"] == 0.7
+    assert "previous draft was rejected" in calls[1]["messages"][1]["content"]
+    assert "get_booking_details" in calls[1]["messages"][1]["content"]
+
+
+def test_closed_hinter_exhaustion_returns_auditable_error(monkeypatch):
+    endpoint = HintEndpoint(
+        "teacher", "http://hinter/v1", "key", retries=2
+    )
+    hinter = ClosedModelTeacherHinter(endpoint)
+    hinter.client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(
+                create=lambda **_kwargs: SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(
+                            message=SimpleNamespace(
+                                content="Call get_booking_details now."
+                            )
+                        )
+                    ]
+                )
+            )
+        )
+    )
+    monkeypatch.setattr("coevo.models.hinted_teacher.time.sleep", lambda *_args: None)
+    result = hinter.hint(
+        {
+            "available_tools": [
+                {
+                    "type": "function",
+                    "function": {"name": "get_booking_details"},
+                }
+            ]
+        },
+        "L2_PROCEDURAL",
+    )
+    assert result.hint == {}
+    assert result.error["attempts"] == 2

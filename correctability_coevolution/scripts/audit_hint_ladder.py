@@ -153,9 +153,18 @@ def main() -> None:
             hint_note = ""
             if result.hint:
                 hint_note = str((result.hint.get("hint") or {}).get("plan") or "")
+            hint_error = (
+                result.hint.get("error")
+                if isinstance(result.hint, dict)
+                else None
+            )
             standard_validation = None
             standard_eligible = False
-            if level is HintLevel.L3_ORACLE and args.validate_standard_actions:
+            if (
+                not hint_error
+                and level is HintLevel.L3_ORACLE
+                and args.validate_standard_actions
+            ):
                 fixed_generator = TeacherActionGenerator(
                     environment,
                     action_provider=lambda _decision, _seed, value=result: value,
@@ -177,6 +186,7 @@ def main() -> None:
                 "state_hash": decision.state_hash,
                 "hint_level": level.value,
                 "hint": result.hint,
+                "hint_error": hint_error,
                 "hint_words": len(hint_note.split()),
                 "teacher_action": result.action.model_dump(mode="json"),
                 "public_state": state["history_before"],

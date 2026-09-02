@@ -7,6 +7,8 @@ import subprocess
 import sys
 
 from coevo.hints import HintLevel
+from coevo.config import InfraConfig
+from coevo.curriculum import probe_scenario
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,6 +35,27 @@ def latest_checkpoint(output_dir: Path) -> str:
     return str(max(checkpoints, key=lambda path: path.stat().st_mtime))
 
 
+def collect_teacher_probe_results(config, task_ids, levels, k, probe_fn=probe_scenario):
+    results = {}
+    summary = {}
+    for task_id in task_ids:
+        results[str(task_id)] = {
+            level.value: probe_fn(config, str(task_id), level, k).to_dict()
+            for level in levels
+        }
+    for level in levels:
+        rates = [
+            results[str(task_id)][level.value]["success_rate"]
+            for task_id in task_ids
+        ]
+        summary[level.value] = {
+            "tasks": len(rates),
+            "mean_success_rate": sum(rates) / len(rates),
+            "k_per_task": k,
+        }
+    return results, summary
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="E2 equal-budget hint dose-response experiment")
     parser.add_argument("--output-dir", type=Path, required=True)
@@ -54,10 +77,14 @@ def main() -> None:
     )
     parser.add_argument("--active-token-budget", type=int)
     parser.add_argument("--student-steps", type=int, default=100)
+    parser.add_argument("--teacher-probe-k", type=int, default=8)
+    parser.add_argument("--skip-teacher-probes", action="store_true")
     parser.add_argument("--collect-only", action="store_true")
     args = parser.parse_args()
     if args.active_token_budget is not None and args.active_token_budget < 1:
         parser.error("--active-token-budget must be positive")
+    if args.teacher_probe_k < 1:
+        parser.error("--teacher-probe-k must be positive")
 
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -86,6 +113,18 @@ def main() -> None:
             env,
         )
         state_pools[seed] = pool_dir / "trajectories.jsonl"
+
+    teacher_probe_results = {}
+    teacher_probe_summary = {}
+    if not args.skip_teacher_probes:
+        probe_config = InfraConfig.from_env()
+        probe_levels = [HintLevel.L0_NONE, *[HintLevel.parse(value) for value in args.levels]]
+        teacher_probe_results, teacher_probe_summary = collect_teacher_probe_results(
+            probe_config,
+            args.task_ids,
+            probe_levels,
+            args.teacher_probe_k,
+        )
 
     arms = []
     for level in args.levels:
@@ -160,6 +199,9 @@ def main() -> None:
         },
         "same_public_states_across_levels": True,
         "equal_active_token_budget": budget,
+        "teacher_probe_results": teacher_probe_results,
+        "teacher_probe_summary": teacher_probe_summary,
+        "teacher_probes_skipped": args.skip_teacher_probes,
         "arms": [
             {key: value for key, value in arm.items() if key not in {"env", "arm_dir", "dataset"}}
             | {"dataset": str(arm["dataset"])}

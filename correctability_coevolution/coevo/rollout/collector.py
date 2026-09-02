@@ -65,6 +65,16 @@ class NaturalDecisionCollector:
         config = getattr(self.environment, "config", None)
         level = getattr(config, "hint_level", HintLevel.L3_ORACLE)
         candidate["hint_level"] = HintLevel.parse(level).value
+        hint_result = candidate.get("teacher_hint")
+        if isinstance(hint_result, dict) and hint_result.get("error"):
+            candidate.update(
+                {
+                    "student_eligible": False,
+                    "student_rejection_reason": "teacher hinter exhausted retries",
+                    "teacher_hint_hash": canonical_hash(hint_result),
+                }
+            )
+            return candidate
         history_before = load_messages(candidate["history_before"])
         teacher_action = AssistantMessage.model_validate(candidate["teacher_action"])
         visible_messages = student_view(

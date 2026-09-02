@@ -41,6 +41,7 @@ class TeacherHintResult:
     latency_ms: int
     sha256: str
     level: str = HintLevel.L3_ORACLE.value
+    error: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -163,8 +164,16 @@ class ClosedModelTeacherHinter:
         request_payload = prepare_hint_payload(payload, parsed_level)
         started = time.monotonic()
         last_error = None
+        correction = ""
         for attempt in range(self.endpoint.retries):
             try:
+                user_content = json.dumps(request_payload, ensure_ascii=False)
+                if correction:
+                    user_content += (
+                        "\n\nThe previous draft was rejected because it violated: "
+                        f"{correction}. Rewrite it from scratch and remove that "
+                        "violation while preserving useful procedural guidance."
+                    )
                 response = self.client.chat.completions.create(
                     model=self.endpoint.model,
                     messages=[
@@ -174,10 +183,10 @@ class ClosedModelTeacherHinter:
                         },
                         {
                             "role": "user",
-                            "content": json.dumps(request_payload, ensure_ascii=False),
+                            "content": user_content,
                         },
                     ],
-                    temperature=0,
+                    temperature=0 if attempt == 0 else 0.7,
                     max_tokens=self.endpoint.max_tokens,
                 )
                 plan = (response.choices[0].message.content or "").strip()
@@ -198,6 +207,8 @@ class ClosedModelTeacherHinter:
                 )
             except Exception as error:
                 last_error = error
+                if isinstance(error, ValueError):
+                    correction = str(error)
                 if attempt + 1 < self.endpoint.retries:
                     time.sleep(min(2**attempt, 4))
         detail = (
@@ -205,9 +216,25 @@ class ClosedModelTeacherHinter:
             if last_error is not None
             else "unknown error"
         )
-        raise RuntimeError(
-            f"Teacher hinter failed after {self.endpoint.retries} attempts: {detail}"
-        ) from last_error
+        error_payload = {
+            "type": type(last_error).__name__ if last_error is not None else "Unknown",
+            "message": detail,
+            "attempts": self.endpoint.retries,
+        }
+        canonical = json.dumps(
+            {"level": parsed_level.value, "hint": {}, "error": error_payload},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return TeacherHintResult(
+            hint={},
+            model=self.endpoint.model,
+            latency_ms=round((time.monotonic() - started) * 1000),
+            sha256=hashlib.sha256(canonical.encode()).hexdigest()[:16],
+            level=parsed_level.value,
+            error=error_payload,
+        )
 
 
 def _message_rows(messages: list[APICompatibleMessage]) -> list[dict]:

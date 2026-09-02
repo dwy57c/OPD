@@ -11,6 +11,7 @@ from coevo.config import InfraConfig
 from coevo.environment import Tau2Environment
 from coevo.environment.tau2 import load_messages
 from coevo.intervention import extract_decision_states
+from coevo.hints import HintLevel
 from coevo.rollout import NaturalDecisionCollector, build_teacher_target_labeler
 
 
@@ -381,5 +382,114 @@ def relabel_dataset_from_trajectories(
     summary["source_trajectories"] = str(source_path)
     summary["source_dataset_fingerprint"] = source_fingerprint
     summary["public_state_pool_reused"] = True
+    _write_json(output_dir / "summary.json", summary)
+    return summary
+
+
+def collect_mixed_dosage_dataset(
+    config: InfraConfig,
+    source_path: Path,
+    output_dir: Path,
+    selections: list[dict],
+) -> dict:
+    """Materialize a weighted h* curriculum with per-row hint levels."""
+
+    if not selections:
+        raise ValueError("mixed dosage curriculum has no selected tasks")
+    source_records = _read_jsonl(source_path, config.dataset_schema_version)
+    source_fingerprint = dataset_fingerprint(source_records)
+    by_task: dict[str, list[dict]] = {}
+    for source in source_records:
+        by_task.setdefault(str(source["task_id"]), []).append(source)
+    records: list[dict] = []
+    student_rows: list[dict] = []
+    buyer_rows: list[dict] = []
+    task_ids: list[str] = []
+    task_offsets: dict[str, int] = {}
+    for sample_index, selection in enumerate(selections):
+        task_id = str(selection["task_id"])
+        level = HintLevel.parse(selection["hint_level"])
+        candidates = by_task.get(task_id) or []
+        if not candidates:
+            raise ValueError(f"source pool has no trajectory for task {task_id!r}")
+        offset = task_offsets.get(task_id, 0)
+        source = candidates[offset % len(candidates)]
+        task_offsets[task_id] = offset + 1
+        if task_id not in task_ids:
+            task_ids.append(task_id)
+        environment = Tau2Environment(
+            replace(
+                config,
+                domain=str(source.get("domain", config.domain)),
+                task_split=str(source.get("task_split", config.task_split)),
+                task_id=task_id,
+                hint_level=level,
+            )
+        )
+        collector = NaturalDecisionCollector(
+            environment,
+            build_teacher_target_labeler(environment),
+            max_decisions=environment.config.max_teacher_targets,
+        )
+        trunk = load_messages(source["trunk"])
+        source_decisions = source.get("student_decisions") or []
+        indexes = [int(row["message_index"]) for row in source_decisions]
+        if not indexes:
+            indexes = [state.message_index for state in extract_decision_states(trunk)]
+        decisions = [
+            collector._materialize_target(
+                collector.labeler.score_decision(trunk, message_index)
+            )
+            for message_index in indexes
+        ]
+        record = {
+            **artifact_metadata(environment.config),
+            "hint_level": "MIXED",
+            "sample_hint_level": level.value,
+            "curriculum_sample_index": sample_index,
+            "domain": environment.config.domain,
+            "task_split": environment.config.task_split,
+            "task_id": task_id,
+            "seed": int(source.get("seed", config.seed)),
+            "trunk": source["trunk"],
+            "source_dataset_fingerprint": source_fingerprint,
+            "student_decisions": decisions,
+            "teacher_target_cache": collector._builder().cache_stats,
+        }
+        records.append(record)
+        for row in collector.student_rows(record):
+            row["sample_hint_level"] = level.value
+            row["hint_level"] = "MIXED"
+            row["curriculum_sample_index"] = sample_index
+            student_rows.append(row)
+        buyer_row = collector.buyer_row()
+        buyer_row["sample_hint_level"] = level.value
+        buyer_row["hint_level"] = "MIXED"
+        buyer_row["curriculum_sample_index"] = sample_index
+        buyer_rows.append(buyer_row)
+    summary = _persist(
+        config,
+        output_dir,
+        task_ids,
+        records,
+        student_rows,
+        buyer_rows,
+        [],
+    )
+    summary.update(
+        {
+            "hint_level": "MIXED",
+            "source_trajectories": str(source_path),
+            "source_dataset_fingerprint": source_fingerprint,
+            "curriculum_samples": len(selections),
+            "sample_hint_level_counts": {
+                level.value: sum(
+                    HintLevel.parse(item["hint_level"]) is level
+                    for item in selections
+                )
+                for level in HintLevel
+            },
+        }
+    )
     _write_json(output_dir / "summary.json", summary)
     return summary

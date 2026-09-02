@@ -5,6 +5,7 @@ from pathlib import Path
 
 from coevo.hinter_training import (
     BehaviorHintSample,
+    CopyingDiscriminatorPair,
     build_fresh_discriminator_pairs,
 )
 
@@ -15,6 +16,8 @@ def load_reward_trace(path: Path) -> list[BehaviorHintSample]:
         if not line.strip():
             continue
         row = json.loads(line)
+        if row.get("degenerate_group"):
+            continue
         samples.append(
             BehaviorHintSample(
                 state_hash=str(row["state_hash"]),
@@ -45,6 +48,14 @@ def load_controls(path: Path, control_type: str) -> list[BehaviorHintSample]:
     return samples
 
 
+def load_pairs(path: Path) -> list[CopyingDiscriminatorPair]:
+    return [
+        CopyingDiscriminatorPair(**json.loads(line))
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Build fresh same-state pairwise behavior-copy labels"
@@ -53,6 +64,7 @@ def main() -> None:
     parser.add_argument("output", type=Path)
     parser.add_argument("--explicit-copy-controls", type=Path, required=True)
     parser.add_argument("--useless-controls", type=Path, required=True)
+    parser.add_argument("--natural-copy-pairs", type=Path, required=True)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
     groups = {
@@ -69,6 +81,13 @@ def main() -> None:
                 samples, seed=args.seed + offset
             )
         )
+    natural_pairs = load_pairs(args.natural_copy_pairs)
+    if not natural_pairs or any(
+        pair.control_type != "explicit_copy_natural"
+        for pair in natural_pairs
+    ):
+        raise ValueError("natural-copy pair file is empty or mislabeled")
+    pairs.extend(natural_pairs)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
         "".join(
@@ -83,6 +102,7 @@ def main() -> None:
                 "fresh_samples": {
                     name: len(samples) for name, samples in groups.items()
                 },
+                "natural_copy_pairs": len(natural_pairs),
                 "pairs": len(pairs),
             }
         )

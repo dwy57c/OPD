@@ -1,7 +1,16 @@
 import pytest
+from dataclasses import dataclass
+from types import SimpleNamespace
 
-from coevo.curriculum import ScenarioBand, curriculum_weights, minimal_sufficient_level
+from coevo.curriculum import (
+    ScenarioBand,
+    curriculum_weights,
+    minimal_sufficient_level,
+    probe_scenario,
+)
 from coevo.hints import HintLevel
+from coevo.curriculum.hstar import ProbeResult
+from scripts.run_dosage_experiment import collect_teacher_probe_results
 
 
 def scores(l0, l1, l2, l3):
@@ -34,3 +43,67 @@ def test_hstar_marks_nonmonotonic_measurements_and_scheduler_normalizes():
     assert not decision.monotone
     weights = curriculum_weights({"task": decision})
     assert weights == {"task": pytest.approx(1.0)}
+
+
+def test_hinted_probe_refreshes_hint_before_every_agent_turn(monkeypatch):
+    observed = []
+
+    @dataclass(frozen=True)
+    class Config:
+        task_id: str = "1"
+        hint_level: HintLevel = HintLevel.L0_NONE
+        seed: int = 42
+
+    class Orchestrator:
+        def __init__(self):
+            self.agent = SimpleNamespace(refresh_hint_each_turn=False)
+
+        def run(self):
+            observed.append(self.agent.refresh_hint_each_turn)
+            return SimpleNamespace(reward_info=None)
+
+    class Environment:
+        def __init__(self, config):
+            self.config = config
+
+        @staticmethod
+        def initial_history():
+            return []
+
+        @staticmethod
+        def orchestrator(_history, _policy, seed):
+            assert seed in {42, 43}
+            return Orchestrator()
+
+        @staticmethod
+        def evaluate(_simulation):
+            return SimpleNamespace(reward=1.0)
+
+    monkeypatch.setattr("coevo.curriculum.hstar.Tau2Environment", Environment)
+    result = probe_scenario(Config(), "1", HintLevel.L2_PROCEDURAL, k=2)
+    assert result.successes == 2
+    assert observed == [True, True]
+
+
+def test_e2_records_teacher_success_for_every_hint_level():
+    def fake_probe(_config, task_id, level, k):
+        successes = {"L0_NONE": 1, "L1_POLICY": 2, "L2_PROCEDURAL": 3}[level.value]
+        return ProbeResult(
+            task_id,
+            level,
+            k,
+            successes,
+            tuple([1.0] * successes + [0.0] * (k - successes)),
+        )
+
+    levels = [
+        HintLevel.L0_NONE,
+        HintLevel.L1_POLICY,
+        HintLevel.L2_PROCEDURAL,
+    ]
+    results, summary = collect_teacher_probe_results(
+        object(), ["a", "b"], levels, 4, probe_fn=fake_probe
+    )
+    assert results["a"]["L2_PROCEDURAL"]["success_rate"] == 0.75
+    assert summary["L1_POLICY"]["mean_success_rate"] == 0.5
+    assert summary["L2_PROCEDURAL"]["tasks"] == 2

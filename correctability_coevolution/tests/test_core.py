@@ -120,3 +120,20 @@ def test_invalid_target_is_preserved_for_audit_instead_of_training():
 
     assert result["student_eligible"] is False
     assert "token mismatch" in result["student_rejection_reason"]
+
+
+def test_exhausted_hinter_is_preserved_as_rejected_audit_row():
+    collector = object.__new__(NaturalDecisionCollector)
+    collector.environment = SimpleNamespace()
+    result = collector._materialize_target(
+        {
+            "state_hash": "state",
+            "teacher_hint": {
+                "hint": {},
+                "error": {"type": "ValueError", "message": "identifier"},
+            },
+        }
+    )
+    assert result["student_eligible"] is False
+    assert result["student_rejection_reason"] == "teacher hinter exhausted retries"
+    assert result["teacher_hint_hash"]

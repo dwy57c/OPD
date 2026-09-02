@@ -3,11 +3,29 @@ import argparse
 import json
 import os
 from pathlib import Path
+import sys
 
 from openai import OpenAI
 
 from coevo.config import InfraConfig
 from coevo.hinter_training import StudentMacroActionGenerator
+
+
+def validate_hint_group(hints: list[str], state_hash: str) -> bool:
+    if len(set(hints)) >= 2 and all(hints):
+        return True
+    print(
+        json.dumps(
+            {
+                "event": "skip_duplicate_hint_group",
+                "state_hash": state_hash,
+                "sampled_hints": len(hints),
+                "distinct_hints": len(set(hints)),
+            }
+        ),
+        file=sys.stderr,
+    )
+    return False
 
 
 def main() -> None:
@@ -34,6 +52,7 @@ def main() -> None:
     )
     student = StudentMacroActionGenerator(InfraConfig.from_env())
     rows = []
+    skipped_duplicate_groups = []
     for line in args.hinter_grpo_rows.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
@@ -48,10 +67,9 @@ def main() -> None:
         hints = [
             (choice.message.content or "").strip() for choice in response.choices
         ]
-        if len(set(hints)) < 2 or any(not hint for hint in hints):
-            raise ValueError(
-                f"state {source['state_hash']} did not yield distinct non-empty hints"
-            )
+        if not validate_hint_group(hints, str(source["state_hash"])):
+            skipped_duplicate_groups.append(str(source["state_hash"]))
+            continue
         for hint in hints:
             behavior = student.generate(
                 student_visible_messages=source["student_visible_messages"],
@@ -73,7 +91,14 @@ def main() -> None:
         "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows),
         encoding="utf-8",
     )
-    print(json.dumps({"fresh_behavior_hint_samples": len(rows)}))
+    print(
+        json.dumps(
+            {
+                "fresh_behavior_hint_samples": len(rows),
+                "skipped_duplicate_groups": skipped_duplicate_groups,
+            }
+        )
+    )
 
 
 if __name__ == "__main__":

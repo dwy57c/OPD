@@ -33,9 +33,11 @@ def pairwise_copy_probability(positive_score: float, negative_score: float) -> f
 class DiscriminatorControlReport:
     ordinary_pair_accuracy: float
     explicit_copy_accuracy: float
+    explicit_copy_natural_accuracy: float
     useless_mean_distance_from_chance: float
     ordinary_pairs: int
     explicit_copy_pairs: int
+    explicit_copy_natural_pairs: int
     useless_pairs: int
 
     def to_dict(self) -> dict[str, Any]:
@@ -45,16 +47,27 @@ class DiscriminatorControlReport:
 @dataclass(frozen=True)
 class DiscriminatorGate:
     minimum_explicit_copy_accuracy: float = 0.9
+    minimum_natural_copy_accuracy: float = 0.8
     maximum_useless_distance_from_chance: float = 0.1
 
     def validate(self, report: DiscriminatorControlReport) -> None:
-        if report.explicit_copy_pairs < 1 or report.useless_pairs < 1:
+        if (
+            report.explicit_copy_pairs < 1
+            or report.explicit_copy_natural_pairs < 1
+            or report.useless_pairs < 1
+        ):
             raise ValueError(
-                "discriminator validation requires explicit-copy and useless controls"
+                "discriminator validation requires literal-copy, natural-copy, "
+                "and useless controls"
             )
         failures = []
         if report.explicit_copy_accuracy < self.minimum_explicit_copy_accuracy:
             failures.append("explicit-copy control not detected")
+        if (
+            report.explicit_copy_natural_accuracy
+            < self.minimum_natural_copy_accuracy
+        ):
+            failures.append("natural-copy control not detected")
         if (
             report.useless_mean_distance_from_chance
             > self.maximum_useless_distance_from_chance
@@ -76,6 +89,7 @@ def evaluate_pair_scores(
     buckets: dict[str, list[float]] = {
         "ordinary": [],
         "explicit_copy": [],
+        "explicit_copy_natural": [],
         "useless": [],
     }
     for pair, positive, negative in zip(pairs, positive_scores, negative_scores):
@@ -90,6 +104,9 @@ def evaluate_pair_scores(
     return DiscriminatorControlReport(
         ordinary_pair_accuracy=accuracy(buckets["ordinary"]),
         explicit_copy_accuracy=accuracy(buckets["explicit_copy"]),
+        explicit_copy_natural_accuracy=accuracy(
+            buckets["explicit_copy_natural"]
+        ),
         useless_mean_distance_from_chance=(
             sum(abs(value - 0.5) for value in useless) / len(useless)
             if useless
@@ -97,6 +114,7 @@ def evaluate_pair_scores(
         ),
         ordinary_pairs=len(buckets["ordinary"]),
         explicit_copy_pairs=len(buckets["explicit_copy"]),
+        explicit_copy_natural_pairs=len(buckets["explicit_copy_natural"]),
         useless_pairs=len(useless),
     )
 
@@ -148,19 +166,31 @@ def pair_to_training_row(pair: CopyingDiscriminatorPair) -> dict[str, str]:
     }
 
 
-def score_texts(model, tokenizer, texts: Iterable[str], *, max_length: int) -> list[float]:
+def score_texts(
+    model,
+    tokenizer,
+    texts: Iterable[str],
+    *,
+    max_length: int,
+    batch_size: int = 32,
+) -> list[float]:
     values = list(texts)
     if not values:
         return []
+    if batch_size < 1:
+        raise ValueError("discriminator score batch_size must be positive")
     device = next(model.parameters()).device
-    batch = tokenizer(
-        values,
-        padding=True,
-        truncation=True,
-        max_length=max_length,
-        return_tensors="pt",
-    )
-    batch = {key: value.to(device) for key, value in batch.items()}
-    with torch.no_grad():
-        logits = model(**batch).logits.reshape(-1)
-    return [float(value) for value in logits.detach().cpu().tolist()]
+    result = []
+    for start in range(0, len(values), batch_size):
+        batch = tokenizer(
+            values[start : start + batch_size],
+            padding=True,
+            truncation=True,
+            max_length=max_length,
+            return_tensors="pt",
+        )
+        batch = {key: value.to(device) for key, value in batch.items()}
+        with torch.no_grad():
+            logits = model(**batch).logits.reshape(-1)
+        result.extend(float(value) for value in logits.detach().cpu().tolist())
+    return result

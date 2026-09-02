@@ -36,6 +36,14 @@ def test_artifact_contract_rejects_incompatible_tokenizer_or_target():
         validate_compatible_artifacts(
             [("first", contract()), ("second", contract(hint_level="L3_ORACLE"))]
         )
+
+
+def test_mixed_hint_contract_accepts_rows_with_per_sample_levels():
+    mixed = contract(hint_level="MIXED")
+    first = {**mixed, "sample_hint_level": "L1_POLICY"}
+    second = {**mixed, "sample_hint_level": "L3_ORACLE"}
+    result = validate_compatible_artifacts([("first", first), ("second", second)])
+    assert result.hint_level == "MIXED"
     with pytest.raises(ValueError, match="incompatible artifact contracts"):
         validate_compatible_artifacts(
             [

@@ -23,9 +23,11 @@ def control_report():
     return DiscriminatorControlReport(
         ordinary_pair_accuracy=0.8,
         explicit_copy_accuracy=1.0,
+        explicit_copy_natural_accuracy=0.9,
         useless_mean_distance_from_chance=0.05,
         ordinary_pairs=2,
         explicit_copy_pairs=2,
+        explicit_copy_natural_pairs=2,
         useless_pairs=2,
     )
 

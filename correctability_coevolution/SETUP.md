@@ -62,6 +62,8 @@ not sufficient for a behavioral claim.
 The runner collects one L0 public-state pool per seed, re-labels the exact same
 states at L1/L2/L3, chooses the smallest available reference-token total, and
 trains every arm to that budget.
+It also records per-task and aggregate L0/L1/L2/L3 Teacher success rates using
+turn-refreshed hints, so Student results can be separated from Teacher quality.
 
 ```bash
 python scripts/run_dosage_experiment.py \
@@ -91,6 +93,17 @@ python scripts/run_dosage_curriculum.py \
 
 Baselines use `--policy fixed:L3`, `fixed:L2`, or `random`.
 
+The controller manifest is executable. Consume its sampling weights and
+per-task levels into one `MIXED` dataset:
+
+```bash
+python scripts/collect_dosage_curriculum.py \
+  --manifest artifacts/e3_hstar/dosage_manifest.json \
+  --source-trajectories artifacts/public_states/trajectories.jsonl \
+  --output-dir artifacts/e3_hstar/student_data \
+  --samples 100
+```
+
 ## 6. Hinter GRPO and alternation
 
 Build one fixed-standard-action row per audited state. The default uses the
@@ -104,13 +117,15 @@ python scripts/build_hinter_grpo_dataset.py \
 ```
 
 Before each hinter update, regenerate actual Student macro-actions under several
-hints for every state. Generate the two mandatory controls, create same-state
+hints for every state. Generate the three mandatory controls, create same-state
 pairwise labels, and initialize a Student-sized scalar-head discriminator from
 the current Student checkpoint:
 
 ```bash
 python scripts/collect_discriminator_controls.py \
-  artifacts/hinter_grpo.jsonl --output-dir artifacts/discriminator_controls_t
+  artifacts/hinter_grpo.jsonl \
+  --audit-rows artifacts/e1_hint_audit/audit_rows.jsonl \
+  --output-dir artifacts/discriminator_controls_t
 
 python scripts/collect_behavior_hint_samples.py \
   artifacts/hinter_grpo.jsonl artifacts/current_behavior_samples.jsonl \
@@ -120,7 +135,8 @@ python scripts/build_copying_discriminator_dataset.py \
   artifacts/current_behavior_samples.jsonl \
   artifacts/copying_discriminator_round_t.jsonl \
   --explicit-copy-controls artifacts/discriminator_controls_t/explicit_copy_controls.jsonl \
-  --useless-controls artifacts/discriminator_controls_t/useless_controls.jsonl
+  --useless-controls artifacts/discriminator_controls_t/useless_controls.jsonl \
+  --natural-copy-pairs artifacts/discriminator_controls_t/explicit_copy_natural_pairs.jsonl
 
 python scripts/train_behavior_discriminator.py \
   --student-checkpoint /path/to/current-student \
@@ -155,6 +171,12 @@ Every few rounds, rerun `train_behavior_discriminator.py` from the same current
 Student with a different seed and empty output directory, then compare it with
 the active scorer using `compare_behavior_discriminators.py`. This independent
 auditor is not reused for training rewards.
+
+For production alternation, `scripts/run_alternating_rounds.py` turns every
+callback into a checked subprocess stage, persists per-round manifests and
+state, and executes rollback commands. Its `--commands` JSON contains argv
+templates for the nine named stages; every stage receives its required output
+path as both `{output}` and `COEVO_STAGE_OUTPUT`.
 
 ## 7. Detector validation
 

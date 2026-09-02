@@ -73,12 +73,14 @@ def main() -> None:
     manifest = {
         "controller": args.policy,
         "checkpoint": config.current_policy_checkpoint,
+        "seed": config.seed,
         "k": args.k,
         "sufficient": args.sufficient,
         "near_zero": args.near_zero,
         "probes": probes,
         "decisions": {key: value.to_dict() for key, value in decisions.items()},
         "sampling_weights": weights,
+        "consumer": "scripts/collect_dosage_curriculum.py",
     }
     args.output_dir.mkdir(parents=True, exist_ok=True)
     (args.output_dir / "dosage_manifest.json").write_text(

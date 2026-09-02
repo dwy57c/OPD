@@ -47,6 +47,8 @@ the dose-response experiment; it is the untouched base checkpoint.
 | `correctability_coevolution/scripts/audit_hint_ladder.py` | E1 runner |
 | `correctability_coevolution/scripts/run_dosage_experiment.py` | E2 equal-active-token runner |
 | `correctability_coevolution/scripts/run_dosage_curriculum.py` | E3 controller and baselines |
+| `correctability_coevolution/scripts/collect_dosage_curriculum.py` | weighted mixed-level E3 dataset executor |
+| `correctability_coevolution/scripts/run_alternating_rounds.py` | manifest-backed Student/hinter subprocess driver |
 | `correctability_coevolution/scripts/evaluate_behavior.py` | behavior audit for evaluation conversations |
 
 The detailed scientific and implementation contract is in
