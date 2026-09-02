@@ -147,4 +147,38 @@ def test_hinted_probe_excludes_trials_with_hinter_errors(monkeypatch):
     assert result.hint_error_trials == 1
     assert result.valid_trials == 0
     assert result.successes == 0
-    assert result.success_rate == 0.0
+    assert result.success_rate is None
+    assert result.pass_at_k is None
+
+
+def test_hstar_skips_unmeasured_hint_level_instead_of_treating_it_as_zero():
+    unmeasured = ProbeResult(
+        "task",
+        HintLevel.L1_POLICY,
+        8,
+        0,
+        (0.0,) * 8,
+        hint_error_trials=5,
+    )
+    result = minimal_sufficient_level(
+        {
+            HintLevel.L0_NONE: 0.1,
+            HintLevel.L1_POLICY: unmeasured,
+            HintLevel.L2_PROCEDURAL: 0.8,
+            HintLevel.L3_ORACLE: 0.9,
+        },
+        sufficient=0.7,
+    )
+    assert result.level is HintLevel.L2_PROCEDURAL
+
+    unresolved = minimal_sufficient_level(
+        {
+            HintLevel.L0_NONE: 0.1,
+            HintLevel.L1_POLICY: unmeasured,
+            HintLevel.L2_PROCEDURAL: 0.2,
+            HintLevel.L3_ORACLE: 0.3,
+        },
+        sufficient=0.7,
+    )
+    assert unresolved.level is None
+    assert unresolved.band is ScenarioBand.UNMEASURED

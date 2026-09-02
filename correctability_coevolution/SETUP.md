@@ -151,6 +151,7 @@ Then freeze that discriminator and run the only hinter reward:
 
 ```bash
 export COEVO_HINTER_BASE_MODEL=/path/to/open-hinter
+export COEVO_HINTER_TUNER_TYPE=full
 export COEVO_HINTER_DISCRIMINATOR_URL=http://127.0.0.1:8010
 export COEVO_HINTER_COPY_WEIGHT=1.0
 export COEVO_HINTER_LENGTH_WEIGHT=0.002
@@ -178,19 +179,25 @@ state, and executes rollback commands. Its `--commands` JSON contains argv
 templates for the nine named stages; every stage receives its required output
 path as both `{output}` and `COEVO_STAGE_OUTPUT`.
 
-The repository includes a schema-compatible command set:
+The repository includes a schema-compatible command set. Before every Student
+update it consumes the previous h* manifest, asks the currently served
+`hinter_under_test` through `teacher_hint_mode=open_hinter`, rebuilds the mixed
+Student dataset, and trains from `{student}`. Both Student and hinter therefore
+accumulate across rounds.
 
 ```bash
-export COEVO_ALTERNATING_STUDENT_DATASET=/path/to/current/mixed_student_gkd.jsonl
 export COEVO_ALTERNATING_TASK_IDS="1 2 3"
+export COEVO_ALTERNATING_SAMPLES=100
 export COEVO_HINTER_GRPO_DATASET=/path/to/hinter_grpo.jsonl
-export COEVO_EXPLICIT_COPY_CONTROLS=/path/to/explicit_copy_controls.jsonl
-export COEVO_USELESS_CONTROLS=/path/to/useless_controls.jsonl
-export COEVO_NATURAL_COPY_PAIRS=/path/to/explicit_copy_natural_pairs.jsonl
+export COEVO_HINT_AUDIT_ROWS=/path/to/e1/audit_rows.jsonl
+export COEVO_HINTER_URL=http://127.0.0.1:8004
+export COEVO_HINTER_MODEL=hinter
 
 python scripts/run_alternating_rounds.py \
   --commands configs/alternating_commands.example.json \
   --scenario-pool /path/to/scenario_pool.json \
+  --source-trajectories /path/to/public_state_pool/trajectories.jsonl \
+  --bootstrap-curriculum-manifest /path/to/bootstrap/dosage_manifest.json \
   --student-checkpoint /path/to/student \
   --hinter-checkpoint /path/to/hinter \
   --output-dir artifacts/alternating \

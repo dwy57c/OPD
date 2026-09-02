@@ -1,4 +1,4 @@
-from coevo.config import HintEndpoint, InfraConfig
+from coevo.config import HintEndpoint, InfraConfig, ModelEndpoint
 
 
 def test_branch_token_budget_reaches_policy_endpoints(monkeypatch):
@@ -39,3 +39,13 @@ def test_hint_endpoint_accepts_standard_openai_env_without_exposing_key(monkeypa
     assert endpoint.base_url == "https://gateway.example/v1"
     assert endpoint.model == "qwen3.8-max"
     assert bool(endpoint.api_key)
+
+
+def test_open_hinter_mode_is_a_supported_teacher_hint_source():
+    config = InfraConfig(
+        policy=ModelEndpoint("student", "http://student"),
+        buyer_reference=ModelEndpoint("buyer", "http://buyer"),
+        teacher_hint_mode="open_hinter",
+        teacher_hinter=HintEndpoint("hinter", "http://hinter/v1", "key"),
+    )
+    assert config.teacher_hint_mode == "open_hinter"

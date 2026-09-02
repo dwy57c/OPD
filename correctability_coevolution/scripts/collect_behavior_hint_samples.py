@@ -9,6 +9,7 @@ from openai import OpenAI
 
 from coevo.config import InfraConfig
 from coevo.hinter_training import StudentMacroActionGenerator
+from coevo.hinter_prompt import build_hinter_messages
 
 
 def validate_hint_group(hints: list[str], state_hash: str) -> bool:
@@ -59,7 +60,9 @@ def main() -> None:
         source = json.loads(line)
         response = hinter.chat.completions.create(
             model=model,
-            messages=source["messages"],
+            messages=build_hinter_messages(
+                source["public_state"], source["privileged_context"]
+            ),
             n=args.hints_per_state,
             temperature=args.temperature,
             max_tokens=int(os.getenv("COEVO_HINTER_MAX_HINT_TOKENS", "192")),

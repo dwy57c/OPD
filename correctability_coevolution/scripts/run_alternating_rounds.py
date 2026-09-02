@@ -229,6 +229,10 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--commands", type=Path, required=True)
     parser.add_argument("--scenario-pool", type=Path, required=True)
+    parser.add_argument("--source-trajectories", type=Path, required=True)
+    parser.add_argument(
+        "--bootstrap-curriculum-manifest", type=Path, required=True
+    )
     parser.add_argument("--student-checkpoint", required=True)
     parser.add_argument("--hinter-checkpoint", required=True)
     parser.add_argument("--rounds", type=int, default=1)
@@ -254,6 +258,9 @@ def main() -> None:
             "hinter_under_test": args.hinter_checkpoint,
             "fallback_hinter": args.hinter_checkpoint,
             "acceptance_baseline": None,
+            "curriculum_manifest": str(
+                args.bootstrap_curriculum_manifest.resolve()
+            ),
         }
         write_json(state_path, state)
     for round_index in range(int(state["next_round"]), args.rounds):
@@ -266,6 +273,8 @@ def main() -> None:
             "round": round_index,
             "round_dir": str(round_dir),
             "output_dir": str(args.output_dir),
+            "curriculum_manifest": str(state["curriculum_manifest"]),
+            "source_trajectories": str(args.source_trajectories.resolve()),
         }
         loop = AlternatingHinterLoop(
             train_student=backend.train_student,
@@ -325,6 +334,9 @@ def main() -> None:
                 }
                 if accepted_snapshot is not None
                 else None
+            ),
+            "curriculum_manifest": str(
+                (round_dir / "dosage" / "dosage_manifest.json").resolve()
             ),
         }
         write_json(state_path, state)

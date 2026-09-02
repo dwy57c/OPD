@@ -1,21 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-import json
 from typing import Any, Iterable, Mapping
 
 from coevo.hints import HintLevel
+from coevo.hinter_prompt import HINTER_SYSTEM_PROMPT, build_hinter_messages
 
 from .grpo_reward import validate_hinter_reward_row
 
 
-HINTER_GRPO_SYSTEM_PROMPT = """
-Write one concise private hint that helps the frozen current Student place more
-probability on the supplied standard next action. The hint is private. Do not
-write the public answer or an API call. Prefer the smallest useful hint: copying
-hidden instance facts into observable Student behavior and unnecessary tokens
-are both penalized by the training reward.
-""".strip()
+HINTER_GRPO_SYSTEM_PROMPT = HINTER_SYSTEM_PROMPT
 
 
 @dataclass(frozen=True)
@@ -75,18 +69,11 @@ def build_hinter_grpo_dataset(
             raise ValueError(
                 f"audited standard row is missing fields: {', '.join(missing)}"
             )
-        prompt = json.dumps(
-            {
-                "public_state": source["public_state"],
-                "privileged_context": source["privileged_context"],
-            },
-            ensure_ascii=False,
+        messages = build_hinter_messages(
+            source["public_state"], source["privileged_context"]
         )
         row = HinterGRPORow(
-            messages=(
-                {"role": "system", "content": HINTER_GRPO_SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ),
+            messages=tuple(messages),
             state_hash=state_hash,
             public_state=source["public_state"],
             privileged_context=source["privileged_context"],

@@ -27,7 +27,7 @@ class Tau2PolicyFactory:
     def teacher(self, environment, task, hint_result=None):
         endpoint = self.config.teacher
         if (
-            self.config.teacher_hint_mode == "closed_model"
+            self.config.teacher_hint_mode in {"closed_model", "open_hinter"}
             and self.config.hint_level is not HintLevel.L0_NONE
         ):
             return HintedTeacherAgent(
@@ -39,6 +39,7 @@ class Tau2PolicyFactory:
                 hinter_endpoint=self.config.teacher_hinter,
                 initial_hint=hint_result,
                 hint_level=self.config.hint_level,
+                hinter_mode=self.config.teacher_hint_mode,
             )
         return self._agent(environment, endpoint)
 

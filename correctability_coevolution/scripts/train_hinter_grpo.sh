@@ -27,6 +27,7 @@ python "$COEVO_ROOT/scripts/wait_for_servers.py" \
 TRAIN_GPUS=${COEVO_HINTER_TRAIN_GPUS:-0}
 IFS=, read -r -a TRAIN_GPU_IDS <<< "$TRAIN_GPUS"
 NPROC=${COEVO_HINTER_TRAIN_NPROC:-${#TRAIN_GPU_IDS[@]}}
+HINTER_TUNER_TYPE=${COEVO_HINTER_TUNER_TYPE:-full}
 if [[ $NPROC -ne ${#TRAIN_GPU_IDS[@]} ]]; then
   echo "COEVO_HINTER_TRAIN_NPROC=$NPROC does not match GPU count ${#TRAIN_GPU_IDS[@]}" >&2
   exit 2
@@ -41,7 +42,7 @@ ARGS=(
   --dataset "$DATA"
   --remove_unused_columns false
   --reward_funcs hinter_composite
-  --tuner_type "${COEVO_HINTER_TUNER_TYPE:-lora}"
+  --tuner_type "$HINTER_TUNER_TYPE"
   --num_generations "${COEVO_HINTER_NUM_GENERATIONS:-4}"
   --max_completion_length "${COEVO_HINTER_MAX_HINT_TOKENS:-192}"
   --temperature "${COEVO_HINTER_TEMPERATURE:-0.8}"
@@ -58,7 +59,7 @@ ARGS=(
   --run_name "${COEVO_WANDB_RUN_NAME:-hinter-composite-grpo}"
   --output_dir "$OUT"
 )
-if [[ ${COEVO_HINTER_TUNER_TYPE:-lora} == lora ]]; then
+if [[ $HINTER_TUNER_TYPE == lora ]]; then
   ARGS+=(
     --target_modules "${COEVO_HINTER_LORA_TARGET_MODULES:-all-linear}"
     --lora_rank "${COEVO_HINTER_LORA_RANK:-16}"

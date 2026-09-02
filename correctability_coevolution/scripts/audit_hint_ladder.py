@@ -215,6 +215,7 @@ def main() -> None:
                 "teacher_action": result.action.model_dump(mode="json"),
                 "public_state": state["history_before"],
                 "privileged_context": {
+                    "hint_level": level.value,
                     "domain_policy": student.domain_policy,
                     "authoritative_oracle_steps": oracle_steps_from_task(
                         environment.task

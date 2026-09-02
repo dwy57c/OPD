@@ -5,12 +5,14 @@ from coevo.config import HintEndpoint, InfraConfig, ModelEndpoint
 from coevo.models import hinted_teacher as hinted_module
 from coevo.models.hinted_teacher import (
     ClosedModelTeacherHinter,
+    OpenModelTeacherHinter,
     HintedTeacherAgent,
     TeacherHintResult,
     _validate_natural_note,
     format_teacher_system_prompt_with_hint,
 )
 from types import SimpleNamespace
+from coevo.hinter_prompt import build_hinter_messages
 
 
 class FakeHinter:
@@ -251,3 +253,41 @@ def test_closed_hinter_exhaustion_returns_auditable_error(monkeypatch):
     )
     assert result.hint == {}
     assert result.error["attempts"] == 2
+
+
+def test_open_hinter_uses_the_same_prompt_builder_as_grpo():
+    endpoint = HintEndpoint("open-hinter", "http://hinter/v1", "key")
+    hinter = OpenModelTeacherHinter(endpoint)
+    calls = []
+
+    def create(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="Ask for the missing booking number before looking up the record."
+                    )
+                )
+            ]
+        )
+
+    hinter.client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    )
+    payload = {
+        "task_id": "1",
+        "domain_policy": "policy",
+        "available_tools": [],
+        "authoritative_oracle_steps": "lookup ABC123",
+        "current_history": [{"role": "user", "content": "help"}],
+    }
+    result = hinter.hint(payload, "L3_ORACLE")
+    expected_privileged = {
+        **{key: value for key, value in payload.items() if key != "current_history"},
+        "hint_level": "L3_ORACLE",
+    }
+    assert calls[0]["messages"] == build_hinter_messages(
+        payload["current_history"], expected_privileged
+    )
+    assert result.error is None

@@ -158,15 +158,15 @@ class InfraConfig:
     sharpen_enabled: bool = False
 
     def __post_init__(self):
-        if self.teacher_hint_mode not in {"none", "closed_model"}:
+        if self.teacher_hint_mode not in {"none", "closed_model", "open_hinter"}:
             raise ValueError(
-                "teacher_hint_mode must be 'none' or 'closed_model', got "
+                "teacher_hint_mode must be none, closed_model, or open_hinter, got "
                 f"{self.teacher_hint_mode!r}"
             )
         parsed_hint_level = HintLevel.parse(self.hint_level)
         object.__setattr__(self, "hint_level", parsed_hint_level)
         if (
-            self.teacher_hint_mode == "closed_model"
+            self.teacher_hint_mode in {"closed_model", "open_hinter"}
             and parsed_hint_level is not HintLevel.L0_NONE
             and self.teacher_hinter is None
         ):
@@ -307,7 +307,7 @@ class InfraConfig:
             teacher_hint_mode=hint_mode,
             teacher_hinter=HintEndpoint.from_env(
                 required=(
-                    hint_mode == "closed_model"
+                    hint_mode in {"closed_model", "open_hinter"}
                     and hint_level is not HintLevel.L0_NONE
                 )
             ),

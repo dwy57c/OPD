@@ -28,6 +28,7 @@ from coevo.hints import (
     prepare_hint_payload,
     validate_hint_note,
 )
+from coevo.hinter_prompt import build_hinter_messages
 
 
 # Compatibility export for callers that benchmark the historical full-oracle dose.
@@ -237,6 +238,95 @@ class ClosedModelTeacherHinter:
         )
 
 
+class OpenModelTeacherHinter(ClosedModelTeacherHinter):
+    """Open hinter queried with the exact prompt used by GRPO and sampling."""
+
+    def hint(
+        self,
+        payload: dict[str, Any],
+        level: HintLevel | str = HintLevel.L3_ORACLE,
+    ) -> TeacherHintResult:
+        parsed_level = HintLevel.parse(level)
+        if parsed_level is HintLevel.L0_NONE:
+            raise ValueError("L0 must bypass the hinter API")
+        prepared = prepare_hint_payload(payload, parsed_level)
+        public_state = prepared.get("current_history") or []
+        privileged_context = {
+            key: value
+            for key, value in prepared.items()
+            if key != "current_history"
+        }
+        messages = build_hinter_messages(public_state, privileged_context)
+        started = time.monotonic()
+        last_error = None
+        correction = ""
+        for attempt in range(self.endpoint.retries):
+            try:
+                request_messages = list(messages)
+                if correction:
+                    request_messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "The previous draft violated this contract: "
+                                f"{correction}. Rewrite it without the violation."
+                            ),
+                        }
+                    )
+                response = self.client.chat.completions.create(
+                    model=self.endpoint.model,
+                    messages=request_messages,
+                    temperature=0 if attempt == 0 else 0.7,
+                    max_tokens=self.endpoint.max_tokens,
+                )
+                plan = (response.choices[0].message.content or "").strip()
+                validate_hint_note(plan, prepared, parsed_level)
+                hint = {"plan": plan}
+                canonical = json.dumps(
+                    {"level": parsed_level.value, "hint": hint},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                return TeacherHintResult(
+                    hint=hint,
+                    model=self.endpoint.model,
+                    latency_ms=round((time.monotonic() - started) * 1000),
+                    sha256=hashlib.sha256(canonical.encode()).hexdigest()[:16],
+                    level=parsed_level.value,
+                )
+            except Exception as error:
+                last_error = error
+                if isinstance(error, ValueError):
+                    correction = str(error)
+                if attempt + 1 < self.endpoint.retries:
+                    time.sleep(min(2**attempt, 4))
+        detail = (
+            f"{type(last_error).__name__}: {last_error}"
+            if last_error is not None
+            else "unknown error"
+        )
+        error_payload = {
+            "type": type(last_error).__name__ if last_error is not None else "Unknown",
+            "message": detail,
+            "attempts": self.endpoint.retries,
+        }
+        canonical = json.dumps(
+            {"level": parsed_level.value, "hint": {}, "error": error_payload},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return TeacherHintResult(
+            hint={},
+            model=self.endpoint.model,
+            latency_ms=round((time.monotonic() - started) * 1000),
+            sha256=hashlib.sha256(canonical.encode()).hexdigest()[:16],
+            level=parsed_level.value,
+            error=error_payload,
+        )
+
+
 def _message_rows(messages: list[APICompatibleMessage]) -> list[dict]:
     rows = []
     for message in messages:
@@ -262,11 +352,19 @@ class HintedTeacherAgent(LLMAgent):
         initial_hint: TeacherHintResult | None = None,
         refresh_hint_each_turn: bool = False,
         hint_level: HintLevel | str = HintLevel.L3_ORACLE,
+        hinter_mode: str = "closed_model",
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
+        if hinter_mode not in {"closed_model", "open_hinter"}:
+            raise ValueError("hinter_mode must be closed_model or open_hinter")
         self.task = task
-        self.hinter = hinter or ClosedModelTeacherHinter(hinter_endpoint)
+        if hinter is not None:
+            self.hinter = hinter
+        elif hinter_mode == "open_hinter":
+            self.hinter = OpenModelTeacherHinter(hinter_endpoint)
+        else:
+            self.hinter = ClosedModelTeacherHinter(hinter_endpoint)
         self.hint_records: list[dict] = []
         self._session_hint = initial_hint
         self.refresh_hint_each_turn = refresh_hint_each_turn

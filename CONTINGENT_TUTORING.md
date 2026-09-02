@@ -115,6 +115,13 @@ run a few hinter GRPO steps with usefulness - copying - length
 carry the new hinter candidate into the next Student segment for real acceptance
 ```
 
+The Student segment is recollected each round from the current public-state
+curriculum using `teacher_hint_mode=open_hinter`. Collection, GRPO dataset
+construction, and behavior sampling all call the same `build_hinter_messages`
+function. Student training starts from the prior Student checkpoint and hinter
+GRPO starts from the prior full hinter checkpoint; neither model resets to its
+original base between rounds.
+
 pass@k is used only by the scheduler and acceptance fuse. The measured
 cross-round distillation gain is logged and used for rollback but is never an
 optimizer reward. Rollback uses a binomial standard-error tolerance for the

@@ -38,6 +38,7 @@ the dose-response experiment; it is the untouched base checkpoint.
 | Path | Purpose |
 |---|---|
 | `correctability_coevolution/coevo/hints/ladder.py` | L0–L3 contracts and fail-closed validators |
+| `correctability_coevolution/coevo/hinter_prompt.py` | one prompt contract shared by GRPO, sampling, and open-hinter collection |
 | `correctability_coevolution/coevo/audit/behavior.py` | clarification, lookup, and public-grounding metrics |
 | `correctability_coevolution/coevo/audit/leakage_probe.py` | conditional `(s,a,h)` leakage probe and s-only baseline |
 | `correctability_coevolution/coevo/curriculum/hstar.py` | frozen-checkpoint pass@k probes, h*, and four-band scheduling |

@@ -2,7 +2,7 @@
   "train_student": [
     "bash",
     "-lc",
-    "bash scripts/train_student_full.sh \"$COEVO_ALTERNATING_STUDENT_DATASET\" \"{round_dir}/student\" {student_steps} && python scripts/stages/checkpoint_result.py --checkpoint-root \"{round_dir}/student\" --refresh-role policy --output \"{output}\""
+    "COEVO_TEACHER_HINT_MODE=open_hinter COEVO_TEACHER_HINT_URL=\"$COEVO_HINTER_URL\" COEVO_TEACHER_HINT_MODEL=\"$COEVO_HINTER_MODEL\" python scripts/collect_dosage_curriculum.py --manifest \"{curriculum_manifest}\" --source-trajectories \"{source_trajectories}\" --output-dir \"{round_dir}/student_data\" --samples \"${COEVO_ALTERNATING_SAMPLES:-100}\" && COEVO_POLICY_BASE_MODEL=\"{student}\" bash scripts/train_student_full.sh \"{round_dir}/student_data/student_gkd.jsonl\" \"{round_dir}/student\" {student_steps} && python scripts/stages/checkpoint_result.py --checkpoint-root \"{round_dir}/student\" --refresh-role policy --output \"{output}\""
   ],
   "measure_pass_at_k": [
     "bash",
@@ -25,7 +25,7 @@
   "retrain_discriminator": [
     "bash",
     "-lc",
-    "python scripts/stages/prepare_discriminator_pairs.py --ordinary-pairs \"{pairs}\" --explicit-copy-controls \"$COEVO_EXPLICIT_COPY_CONTROLS\" --useless-controls \"$COEVO_USELESS_CONTROLS\" --natural-copy-pairs \"$COEVO_NATURAL_COPY_PAIRS\" --output \"{round_dir}/all_discriminator_pairs.jsonl\" --seed {round} && python scripts/train_behavior_discriminator.py --student-checkpoint \"{current_student}\" --pairs \"{round_dir}/all_discriminator_pairs.jsonl\" --output-dir \"{round_dir}/discriminator\" --seed {round} && python scripts/stages/discriminator_result.py --report \"{round_dir}/discriminator/discriminator_report.json\" --checkpoint \"{round_dir}/discriminator\" --ordinary-pairs \"{pairs}\" --round-index {round} --output \"{output}\" && bash scripts/stop_role.sh behavior_discriminator && bash scripts/start_role.sh behavior_discriminator \"{round_dir}/discriminator\""
+    "python scripts/collect_discriminator_controls.py \"$COEVO_HINTER_GRPO_DATASET\" --audit-rows \"$COEVO_HINT_AUDIT_ROWS\" --output-dir \"{round_dir}/controls\" && python scripts/stages/prepare_discriminator_pairs.py --ordinary-pairs \"{pairs}\" --explicit-copy-controls \"{round_dir}/controls/explicit_copy_controls.jsonl\" --useless-controls \"{round_dir}/controls/useless_controls.jsonl\" --natural-copy-pairs \"{round_dir}/controls/explicit_copy_natural_pairs.jsonl\" --output \"{round_dir}/all_discriminator_pairs.jsonl\" --seed {round} && python scripts/train_behavior_discriminator.py --student-checkpoint \"{current_student}\" --pairs \"{round_dir}/all_discriminator_pairs.jsonl\" --output-dir \"{round_dir}/discriminator\" --seed {round} && python scripts/stages/discriminator_result.py --report \"{round_dir}/discriminator/discriminator_report.json\" --checkpoint \"{round_dir}/discriminator\" --ordinary-pairs \"{pairs}\" --round-index {round} --output \"{output}\" && bash scripts/stop_role.sh behavior_discriminator && bash scripts/start_role.sh behavior_discriminator \"{round_dir}/discriminator\""
   ],
   "train_independent_auditor": [
     "bash",
@@ -35,7 +35,7 @@
   "train_hinter_grpo": [
     "bash",
     "-lc",
-    "bash scripts/train_hinter_grpo.sh \"$COEVO_HINTER_GRPO_DATASET\" \"{round_dir}/hinter\" {hinter_steps} && python scripts/stages/checkpoint_result.py --checkpoint-root \"{round_dir}/hinter\" --refresh-role hinter --output \"{output}\""
+    "COEVO_HINTER_BASE_MODEL=\"{hinter}\" COEVO_HINTER_TUNER_TYPE=full bash scripts/train_hinter_grpo.sh \"$COEVO_HINTER_GRPO_DATASET\" \"{round_dir}/hinter\" {hinter_steps} && python scripts/stages/checkpoint_result.py --checkpoint-root \"{round_dir}/hinter\" --refresh-role hinter --output \"{output}\""
   ],
   "rollback_student": [
     "bash",

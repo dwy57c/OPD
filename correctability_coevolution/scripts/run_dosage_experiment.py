@@ -47,6 +47,7 @@ def collect_teacher_probe_results(config, task_ids, levels, k, probe_fn=probe_sc
         rates = [
             results[str(task_id)][level.value]["success_rate"]
             for task_id in task_ids
+            if results[str(task_id)][level.value]["success_rate"] is not None
         ]
         hint_errors = sum(
             results[str(task_id)][level.value]["hint_error_trials"]
@@ -55,7 +56,10 @@ def collect_teacher_probe_results(config, task_ids, levels, k, probe_fn=probe_sc
         total_trials = len(task_ids) * k
         summary[level.value] = {
             "tasks": len(rates),
-            "mean_success_rate": sum(rates) / len(rates),
+            "unmeasured_tasks": len(task_ids) - len(rates),
+            "mean_success_rate": (
+                sum(rates) / len(rates) if rates else None
+            ),
             "k_per_task": k,
             "hint_error_trials": hint_errors,
             "contract_violation_rate": hint_errors / total_trials,
