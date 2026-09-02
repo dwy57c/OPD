@@ -100,6 +100,10 @@ Machine-checkable dates, amounts, identifiers, exact tool names, and copied
 oracle literals pass through a public rule audit before the learned reward. A
 rule hit caps the total reward at a fixed negative floor, so copying a concrete
 value cannot pay even when it sharply increases standard-action likelihood.
+For ALFWorld, the privileged payload additionally names
+`goal_object_locations`, `destination_receptacle`, and `unobserved_states`.
+L2 rejects both instance and class aliases of those locations, including hedged
+wording, while L3 is rejected unless it explicitly states every supplied fact.
 
 The only alternating loop uses one pass@k panel per round. A hinter candidate
 created in round `t` is accepted or rejected after the Student has actually

@@ -180,7 +180,9 @@ class ClosedModelTeacherHinter:
                     messages=[
                         {
                             "role": "system",
-                            "content": hint_instruction(parsed_level),
+                            "content": hint_instruction(
+                                parsed_level, request_payload.get("domain")
+                            ),
                         },
                         {
                             "role": "user",
@@ -353,6 +355,8 @@ class HintedTeacherAgent(LLMAgent):
         refresh_hint_each_turn: bool = False,
         hint_level: HintLevel | str = HintLevel.L3_ORACLE,
         hinter_mode: str = "closed_model",
+        hint_domain: str = "tau2",
+        structured_instance_facts: dict[str, Any] | None = None,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -369,14 +373,18 @@ class HintedTeacherAgent(LLMAgent):
         self._session_hint = initial_hint
         self.refresh_hint_each_turn = refresh_hint_each_turn
         self.hint_level = HintLevel.parse(hint_level)
+        self.hint_domain = hint_domain
+        self.structured_instance_facts = dict(structured_instance_facts or {})
 
     def _hint_payload(self, history: list[APICompatibleMessage]) -> dict[str, Any]:
         return {
             "task_id": self.task.id,
+            "domain": self.hint_domain,
             "domain_policy": self.domain_policy,
             "available_tools": [tool.openai_schema for tool in self.tools],
             "authoritative_oracle_steps": oracle_steps_from_task(self.task),
             "current_history": _message_rows(history),
+            **self.structured_instance_facts,
         }
 
     def hint_for_history(

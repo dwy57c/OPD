@@ -209,6 +209,21 @@ discriminator, and independent-auditor artifacts into the driver's strict JSON
 contracts. A stage that fails its gate or omits its output aborts the round with
 a failed manifest.
 
+ALFWorld hinter rows must provide explicit structured privilege rather than
+only an expert action sequence:
+
+```json
+{
+  "domain": "alfworld",
+  "goal_object_locations": {"mug": "coffeemachine 1"},
+  "destination_receptacle": "cabinet 4",
+  "unobserved_states": {"mug": "cold"}
+}
+```
+
+L1 removes these fields, L2 converts them into unbiased observation procedures,
+and L3 must disclose them as natural-language facts.
+
 ## 7. Detector validation
 
 Human-label at least 200 rows per detector and report agreement and Cohen's

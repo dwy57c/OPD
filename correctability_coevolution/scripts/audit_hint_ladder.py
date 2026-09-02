@@ -216,6 +216,7 @@ def main() -> None:
                 "public_state": state["history_before"],
                 "privileged_context": {
                     "hint_level": level.value,
+                    "domain": state["domain"],
                     "domain_policy": student.domain_policy,
                     "authoritative_oracle_steps": oracle_steps_from_task(
                         environment.task

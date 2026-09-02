@@ -3,15 +3,9 @@ from __future__ import annotations
 import json
 from typing import Any, Mapping
 
+from coevo.hints import HintLevel, hint_instruction
 
-HINTER_SYSTEM_PROMPT = """
-Write one concise private hint that helps the frozen current Student place more
-probability on the supplied standard next action. The hint is private. Do not
-write the public answer or an API call. Prefer the smallest useful hint: copying
-hidden instance facts into observable Student behavior and unnecessary tokens
-are both penalized by the training reward. If a hint_level is present, obey that
-information-dose contract.
-""".strip()
+HINTER_SYSTEM_PROMPT = hint_instruction(HintLevel.L2_PROCEDURAL, "tau2")
 
 
 def build_hinter_messages(
@@ -20,8 +14,12 @@ def build_hinter_messages(
 ) -> list[dict[str, str]]:
     """Canonical prompt shared by GRPO, sampling, and Student collection."""
 
+    level = HintLevel.parse(
+        privileged_context.get("hint_level", HintLevel.L2_PROCEDURAL.value)
+    )
+    domain = str(privileged_context.get("domain") or "tau2")
     return [
-        {"role": "system", "content": HINTER_SYSTEM_PROMPT},
+        {"role": "system", "content": hint_instruction(level, domain)},
         {
             "role": "user",
             "content": json.dumps(

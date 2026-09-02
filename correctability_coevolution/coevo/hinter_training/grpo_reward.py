@@ -490,6 +490,20 @@ class HinterCompositeReward(ORM):
                     if isinstance(privileged, Mapping)
                     else ""
                 ),
+                **(
+                    {
+                        key: privileged[key]
+                        for key in (
+                            "domain",
+                            "goal_object_locations",
+                            "destination_receptacle",
+                            "unobserved_states",
+                        )
+                        if key in privileged
+                    }
+                    if isinstance(privileged, Mapping)
+                    else {}
+                ),
             }
             rule_leaks = hint_fact_leaks(hint, leak_payload)
             candidates.append(

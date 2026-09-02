@@ -40,6 +40,7 @@ class Tau2PolicyFactory:
                 initial_hint=hint_result,
                 hint_level=self.config.hint_level,
                 hinter_mode=self.config.teacher_hint_mode,
+                hint_domain=self.config.domain,
             )
         return self._agent(environment, endpoint)
 
