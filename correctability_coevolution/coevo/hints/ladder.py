@@ -112,9 +112,10 @@ _AMOUNT = re.compile(
     re.IGNORECASE,
 )
 _IDENTIFIER = re.compile(
-    r"(?:\b[A-Z]{1,3}\d{2,8}\b|\b\d{6,}\b|"
-    r"\b(?:order|booking|reservation|ticket|account|confirmation)\s*(?:id|number|#)?"
-    r"\s*[:#-]?\s*[A-Z0-9-]{4,}\b)",
+    r"(?:\b[A-Z]{1,3}-?\d{2,8}\b|\b\d{6,}\b|"
+    r"\b(?:order|booking|reservation|ticket|account|confirmation)\s+"
+    r"(?:id|number|#)\s*(?:is\s*)?[:#-]?\s*"
+    r"(?=[A-Z0-9-]*\d[A-Z0-9-]*\b)[A-Z0-9][A-Z0-9-]{3,}\b)",
     re.IGNORECASE,
 )
 
@@ -226,7 +227,9 @@ def validate_hint_note(
 
     for name in _payload_tool_names(payload):
         if re.search(rf"(?<!\w){re.escape(name)}(?!\w)", plan):
-            raise ValueError("closed-model hinter copied an exact tool name")
+            raise ValueError(
+                f"closed-model hinter copied an exact tool name: {name}"
+            )
 
     if parsed in {HintLevel.L1_POLICY, HintLevel.L2_PROCEDURAL}:
         findings = tuple(

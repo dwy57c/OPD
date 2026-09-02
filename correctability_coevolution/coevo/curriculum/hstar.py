@@ -16,10 +16,21 @@ class ProbeResult:
     k: int
     successes: int
     rewards: tuple[float, ...]
+    hint_error_trials: int = 0
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.hint_error_trials <= self.k:
+            raise ValueError("hint_error_trials must be in [0, k]")
+        if not 0 <= self.successes <= self.valid_trials:
+            raise ValueError("successes must count only valid probe trials")
+
+    @property
+    def valid_trials(self) -> int:
+        return self.k - self.hint_error_trials
 
     @property
     def success_rate(self) -> float:
-        return self.successes / self.k
+        return self.successes / self.valid_trials if self.valid_trials else 0.0
 
     @property
     def pass_at_k(self) -> float:
@@ -30,6 +41,7 @@ class ProbeResult:
         value["hint_level"] = self.hint_level.value
         value["success_rate"] = self.success_rate
         value["pass_at_k"] = self.pass_at_k
+        value["valid_trials"] = self.valid_trials
         value["rewards"] = list(self.rewards)
         return value
 
@@ -76,10 +88,13 @@ def probe_scenario(
     parsed = HintLevel.parse(level)
     level_config = replace(config, task_id=str(task_id), hint_level=parsed)
     rewards = []
+    valid_rewards = []
+    hint_error_trials = 0
     for offset in range(k):
         environment = Tau2Environment(level_config)
         policy = "student" if parsed is HintLevel.L0_NONE else "teacher"
         seed = config.seed + offset
+        trial_hint_error = False
         if trial is not None:
             reward = float(trial(environment, policy, seed))
         else:
@@ -95,13 +110,22 @@ def probe_scenario(
             simulation = orchestrator.run()
             simulation.reward_info = environment.evaluate(simulation)
             reward = float(simulation.reward_info.reward)
+            trial_hint_error = parsed is not HintLevel.L0_NONE and any(
+                record.get("error")
+                for record in getattr(orchestrator.agent, "hint_records", [])
+            )
+            if trial_hint_error:
+                hint_error_trials += 1
         rewards.append(reward)
+        if not trial_hint_error:
+            valid_rewards.append(reward)
     return ProbeResult(
         task_id=str(task_id),
         hint_level=parsed,
         k=k,
-        successes=sum(value > 0 for value in rewards),
+        successes=sum(value > 0 for value in valid_rewards),
         rewards=tuple(rewards),
+        hint_error_trials=hint_error_trials,
     )
 
 

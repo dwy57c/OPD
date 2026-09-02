@@ -48,10 +48,17 @@ def collect_teacher_probe_results(config, task_ids, levels, k, probe_fn=probe_sc
             results[str(task_id)][level.value]["success_rate"]
             for task_id in task_ids
         ]
+        hint_errors = sum(
+            results[str(task_id)][level.value]["hint_error_trials"]
+            for task_id in task_ids
+        )
+        total_trials = len(task_ids) * k
         summary[level.value] = {
             "tasks": len(rates),
             "mean_success_rate": sum(rates) / len(rates),
             "k_per_task": k,
+            "hint_error_trials": hint_errors,
+            "contract_violation_rate": hint_errors / total_trials,
         }
     return results, summary
 

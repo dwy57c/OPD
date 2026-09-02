@@ -3,6 +3,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 
 from coevo.config import InfraConfig
 from coevo.hinter_training import StudentMacroActionGenerator
@@ -16,6 +17,25 @@ USELESS_HINTS = (
     "Be concise and professional.",
     "Respond politely and clearly.",
 )
+_ENTITY_VALUE = re.compile(
+    r"(?:\b[A-Z]{1,3}-?\d{2,8}\b|\b\d{4}[-/]\d{1,2}[-/]\d{1,2}\b|"
+    r"[$€£¥]\s*\d+(?:\.\d+)?|\b\d{6,}\b)",
+    re.IGNORECASE,
+)
+
+
+def entity_perturbed_decoy(note: str) -> str | None:
+    """Change entity values while preserving the L3 note's wording and style."""
+
+    def perturb(match: re.Match) -> str:
+        value = match.group(0)
+        return "".join(
+            str((int(character) + 7) % 10) if character.isdigit() else character
+            for character in value
+        )
+
+    result = _ENTITY_VALUE.sub(perturb, note)
+    return result if result != note else None
 
 
 def write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -95,7 +115,7 @@ def main() -> None:
             value for value in rows if value[0].get("hint_level") == "L3_ORACLE"
         ]
         decoys = [
-            note for row, note in rows if row.get("hint_level") != "L3_ORACLE"
+            note for row, note in rows if row.get("hint_level") == "L2_PROCEDURAL"
         ]
         if not l3_rows or not decoys:
             continue
@@ -111,7 +131,8 @@ def main() -> None:
                     "public_state": row["public_state"],
                     "student_behavior": behavior,
                     "positive_hint": natural_hint,
-                    "negative_hint": decoys[0],
+                    "negative_hint": entity_perturbed_decoy(natural_hint)
+                    or decoys[0],
                     "control_type": "explicit_copy_natural",
                 }
             )

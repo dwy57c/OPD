@@ -53,6 +53,30 @@ def test_public_fact_audit_is_reusable_by_grpo_reward():
     ) == ()
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Ask for the order number before searching.",
+        "Request the booking ID and confirm it with the customer.",
+        "The account number must be obtained from the user.",
+    ],
+)
+def test_identifier_audit_allows_slot_names_without_values(text):
+    assert "identifier" not in hint_fact_leaks(text, payload())
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Use order number ABC123 before searching.",
+        "The booking ID is ZX-99881.",
+        "Use confirmation number 123456.",
+    ],
+)
+def test_identifier_audit_still_rejects_concrete_values(text):
+    assert "identifier" in hint_fact_leaks(text, payload())
+
+
 def test_l1_has_strict_length_and_never_receives_oracle_steps():
     prepared = prepare_hint_payload(payload(), HintLevel.L1_POLICY)
     assert "authoritative_oracle_steps" not in prepared

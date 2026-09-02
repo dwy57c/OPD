@@ -107,3 +107,44 @@ def test_e2_records_teacher_success_for_every_hint_level():
     assert results["a"]["L2_PROCEDURAL"]["success_rate"] == 0.75
     assert summary["L1_POLICY"]["mean_success_rate"] == 0.5
     assert summary["L2_PROCEDURAL"]["tasks"] == 2
+
+
+def test_hinted_probe_excludes_trials_with_hinter_errors(monkeypatch):
+    @dataclass(frozen=True)
+    class Config:
+        task_id: str = "1"
+        hint_level: HintLevel = HintLevel.L0_NONE
+        seed: int = 42
+
+    class Orchestrator:
+        agent = SimpleNamespace(
+            refresh_hint_each_turn=False,
+            hint_records=[{"error": {"message": "invalid hint"}}],
+        )
+
+        @staticmethod
+        def run():
+            return SimpleNamespace(reward_info=None)
+
+    class Environment:
+        def __init__(self, config):
+            self.config = config
+
+        @staticmethod
+        def initial_history():
+            return []
+
+        @staticmethod
+        def orchestrator(_history, _policy, seed):
+            return Orchestrator()
+
+        @staticmethod
+        def evaluate(_simulation):
+            return SimpleNamespace(reward=1.0)
+
+    monkeypatch.setattr("coevo.curriculum.hstar.Tau2Environment", Environment)
+    result = probe_scenario(Config(), "1", HintLevel.L2_PROCEDURAL, k=1)
+    assert result.hint_error_trials == 1
+    assert result.valid_trials == 0
+    assert result.successes == 0
+    assert result.success_rate == 0.0

@@ -129,6 +129,8 @@ class SubprocessRoundBackend:
     def collect_discriminator_samples(
         self, student: str, hinter: str, curriculum: dict
     ) -> list[BehaviorHintSample]:
+        self.context["current_student"] = student
+        self.context["current_hinter"] = hinter
         curriculum_path = self.round_dir / "selected_scenarios.json"
         write_json(curriculum_path, curriculum)
         output = self.round_dir / "fresh_discriminator_samples.jsonl"

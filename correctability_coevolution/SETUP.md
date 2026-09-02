@@ -178,6 +178,30 @@ state, and executes rollback commands. Its `--commands` JSON contains argv
 templates for the nine named stages; every stage receives its required output
 path as both `{output}` and `COEVO_STAGE_OUTPUT`.
 
+The repository includes a schema-compatible command set:
+
+```bash
+export COEVO_ALTERNATING_STUDENT_DATASET=/path/to/current/mixed_student_gkd.jsonl
+export COEVO_ALTERNATING_TASK_IDS="1 2 3"
+export COEVO_HINTER_GRPO_DATASET=/path/to/hinter_grpo.jsonl
+export COEVO_EXPLICIT_COPY_CONTROLS=/path/to/explicit_copy_controls.jsonl
+export COEVO_USELESS_CONTROLS=/path/to/useless_controls.jsonl
+export COEVO_NATURAL_COPY_PAIRS=/path/to/explicit_copy_natural_pairs.jsonl
+
+python scripts/run_alternating_rounds.py \
+  --commands configs/alternating_commands.example.json \
+  --scenario-pool /path/to/scenario_pool.json \
+  --student-checkpoint /path/to/student \
+  --hinter-checkpoint /path/to/hinter \
+  --output-dir artifacts/alternating \
+  --rounds 3
+```
+
+The adapters under `scripts/stages/` translate existing checkpoint, dosage,
+discriminator, and independent-auditor artifacts into the driver's strict JSON
+contracts. A stage that fails its gate or omits its output aborts the round with
+a failed manifest.
+
 ## 7. Detector validation
 
 Human-label at least 200 rows per detector and report agreement and Cohen's

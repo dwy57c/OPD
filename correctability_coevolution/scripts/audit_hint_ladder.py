@@ -31,6 +31,30 @@ def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
     )
 
 
+def summarize_level_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    valid = [row for row in rows if not row.get("hint_error")]
+    attempted = len(rows)
+    count = len(valid) or 1
+    return {
+        "rows": attempted,
+        "valid_rows": len(valid),
+        "hint_error_rows": attempted - len(valid),
+        "contract_violation_rate": (
+            (attempted - len(valid)) / attempted if attempted else 0.0
+        ),
+        "mean_hint_words": sum(row["hint_words"] for row in valid) / count,
+        "clarification_rate": sum(
+            row["behavior"]["clarification_rate"] for row in valid
+        )
+        / count,
+        "lookup_rate": sum(row["behavior"]["lookup_rate"] for row in valid) / count,
+        "ungrounded_assertion_rate": sum(
+            row["behavior"]["ungrounded_assertion_rate"] for row in valid
+        )
+        / count,
+    }
+
+
 def _states_from_trajectories(path: Path) -> list[dict[str, Any]]:
     states = []
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -206,17 +230,18 @@ def main() -> None:
                 "behavior": behavior.to_dict(),
             }
             rows.append(row)
-            probe_sources.append(
-                {
-                    "state_id": row["state_id"],
-                    "group_id": state["task_id"],
-                    "task_id": state["task_id"],
-                    "hint_level": level.value,
-                    "state": state["history_before"],
-                    "action": row["teacher_action"],
-                    "hidden": oracle_steps_from_task(environment.task),
-                }
-            )
+            if not hint_error:
+                probe_sources.append(
+                    {
+                        "state_id": row["state_id"],
+                        "group_id": state["task_id"],
+                        "task_id": state["task_id"],
+                        "hint_level": level.value,
+                        "state": state["history_before"],
+                        "action": row["teacher_action"],
+                        "hidden": oracle_steps_from_task(environment.task),
+                    }
+                )
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     _write_jsonl(args.output_dir / "audit_rows.jsonl", rows)
@@ -224,18 +249,7 @@ def main() -> None:
     summary: dict[str, Any] = {"states": len(states), "levels": {}}
     for level in levels:
         selected = [row for row in rows if row["hint_level"] == level.value]
-        count = len(selected) or 1
-        summary["levels"][level.value] = {
-            "rows": len(selected),
-            "mean_hint_words": sum(row["hint_words"] for row in selected) / count,
-            "clarification_rate": sum(
-                row["behavior"]["clarification_rate"] for row in selected
-            ) / count,
-            "lookup_rate": sum(row["behavior"]["lookup_rate"] for row in selected) / count,
-            "ungrounded_assertion_rate": sum(
-                row["behavior"]["ungrounded_assertion_rate"] for row in selected
-            ) / count,
-        }
+        summary["levels"][level.value] = summarize_level_rows(selected)
 
     if args.run_leakage_probe:
         judge = NLLeakageJudge(

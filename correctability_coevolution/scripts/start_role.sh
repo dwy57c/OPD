@@ -53,6 +53,31 @@ case "$ROLE" in
     echo "role '$ROLE' was removed; Student and Teacher both use role 'policy'" >&2
     exit 2
     ;;
+  hinter)
+    GPU=${COEVO_HINTER_GPUS:-5}
+    PORT=${COEVO_HINTER_PORT:-8004}
+    IFS=, read -r -a HINTER_GPU_IDS <<< "$GPU"
+    TP_SIZE=${COEVO_HINTER_TP_SIZE:-${#HINTER_GPU_IDS[@]}}
+    SERVED_MODEL=${COEVO_HINTER_MODEL:-hinter}
+    CUDA_VISIBLE_DEVICES="$GPU" nohup setsid python -m vllm.entrypoints.openai.api_server \
+      --model "$MODEL_PATH" --served-model-name "$SERVED_MODEL" \
+      --tensor-parallel-size "$TP_SIZE" --port "$PORT" \
+      --max-model-len "${COEVO_HINTER_MAX_MODEL_LEN:-16384}" \
+      --gpu-memory-utilization "${COEVO_HINTER_GPU_MEMORY_UTILIZATION:-0.88}" \
+      --max-num-seqs "${COEVO_HINTER_MAX_NUM_SEQS:-8}" \
+      --disable-custom-all-reduce \
+      > "$RUNTIME/logs/$ROLE_KEY.log" 2>&1 &
+    ;;
+  behavior_discriminator)
+    GPU=${COEVO_DISCRIMINATOR_GPUS:-6}
+    PORT=${COEVO_HINTER_DISCRIMINATOR_PORT:-8010}
+    CUDA_VISIBLE_DEVICES="$GPU" nohup setsid python \
+      "$COEVO_ROOT/scripts/serve_behavior_discriminator.py" \
+      --model "$MODEL_PATH" --port "$PORT" \
+      --max-length "${COEVO_DISCRIMINATOR_MAX_LENGTH:-8192}" \
+      --max-batch-size "${COEVO_DISCRIMINATOR_MAX_BATCH_SIZE:-32}" \
+      > "$RUNTIME/logs/$ROLE_KEY.log" 2>&1 &
+    ;;
   buyer)
     GPU=${COEVO_BUYER_GPUS:-${COEVO_BUYER_GPU:-1}}
     IFS=, read -r -a BUYER_GPU_IDS <<< "$GPU"
@@ -128,6 +153,8 @@ WAIT_ARGS=(
 )
 if [[ "$ROLE" == rollout ]]; then
   WAIT_ARGS+=(--health-path /health/)
+elif [[ "$ROLE" == behavior_discriminator ]]; then
+  WAIT_ARGS+=(--health-path /health)
 else
   WAIT_ARGS+=(--model "$SERVED_MODEL")
 fi
