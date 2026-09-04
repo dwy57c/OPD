@@ -7,9 +7,21 @@ def test_manifest_consumer_uses_hstar_only_for_weights_and_excludes_mastered():
     manifest = {
         "sampling_weights": {"a": 0.7, "b": 0.2, "c": 0.1},
         "decisions": {
-            "a": {"level": "L1_POLICY"},
-            "b": {"level": "L3_ORACLE"},
-            "c": {"level": "L0_NONE", "band": "mastered"},
+            "a": {
+                "level": "L1_POLICY",
+                "band": "frontier",
+                "no_hint_score": 0.24,
+            },
+            "b": {
+                "level": "L3_ORACLE",
+                "band": "scaffolded",
+                "no_hint_score": 0.02,
+            },
+            "c": {
+                "level": "L0_NONE",
+                "band": "mastered",
+                "no_hint_score": 0.9,
+            },
         },
     }
     selections, dropped, mass = select_curriculum_tasks(manifest, 20, seed=7)
@@ -17,3 +29,6 @@ def test_manifest_consumer_uses_hstar_only_for_weights_and_excludes_mastered():
     assert "excluded" in dropped["c"]["reason"]
     assert {row["task_id"] for row in selections} <= {"a", "b"}
     assert {row["hint_level"] for row in selections} == {"HINTER"}
+    assert {
+        row["student_profile"]["unhinted_success"] for row in selections
+    } <= {0.2, 0.0}

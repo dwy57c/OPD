@@ -283,11 +283,15 @@ def test_open_hinter_uses_the_same_prompt_builder_as_grpo():
         "available_tools": [],
         "authoritative_oracle_steps": "lookup ABC123",
         "current_history": [{"role": "user", "content": "help"}],
+        "student_profile": {
+            "unhinted_success": 0.2,
+            "curriculum_band": "frontier",
+        },
     }
     result = hinter.hint(payload, "L3_ORACLE")
     expected_privileged = narrow_privileged_context(payload)
     assert calls[0]["messages"] == build_hinter_messages(
-        payload["current_history"], expected_privileged
+        payload["current_history"], expected_privileged, payload["student_profile"]
     )
     assert result.error is None
     assert result.level == "HINTER"
@@ -305,14 +309,42 @@ def test_open_hinter_privileged_context_has_exact_keys():
         "authoritative_oracle_steps",
     }
     with pytest.raises(ValueError, match="keys must be exactly"):
-        build_hinter_messages([], {**narrow_privileged_context(payload), "extra": 1})
+        build_hinter_messages(
+            [],
+            {**narrow_privileged_context(payload), "extra": 1},
+            {"unhinted_success": 0.2, "curriculum_band": "frontier"},
+        )
 
 
 def test_student_profile_changes_hinter_input_without_expanding_privilege():
     privilege = narrow_privileged_context(
         {"domain_policy": "policy", "authoritative_oracle_steps": "oracle"}
     )
-    weak = build_hinter_messages([], privilege, {"unhinted_success": 0.1})
-    strong = build_hinter_messages([], privilege, {"unhinted_success": 0.8})
+    weak = build_hinter_messages(
+        [], privilege, {"unhinted_success": 0.14, "curriculum_band": "frontier"}
+    )
+    strong = build_hinter_messages(
+        [], privilege, {"unhinted_success": 0.84, "curriculum_band": "mastered"}
+    )
     assert weak != strong
     assert "student_profile" in weak[1]["content"]
+
+
+def test_student_profile_has_fixed_keys_and_tenth_buckets():
+    privilege = narrow_privileged_context(
+        {"domain_policy": "policy", "authoritative_oracle_steps": "oracle"}
+    )
+    messages = build_hinter_messages(
+        [], privilege, {"unhinted_success": 0.26, "curriculum_band": "frontier"}
+    )
+    assert '"unhinted_success":0.3' in messages[1]["content"]
+    with pytest.raises(ValueError, match="keys must be exactly"):
+        build_hinter_messages(
+            [],
+            privilege,
+            {
+                "unhinted_success": 0.2,
+                "curriculum_band": "frontier",
+                "checkpoint": "/noise",
+            },
+        )

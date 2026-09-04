@@ -6,6 +6,7 @@ import random
 
 from coevo.config import InfraConfig
 from coevo.hints import HintLevel
+from coevo.hinter_prompt import student_profile_from_decision
 from coevo.orchestration import collect_mixed_dosage_dataset
 
 
@@ -15,8 +16,9 @@ def select_curriculum_tasks(manifest: dict, sample_count: int, seed: int):
     eligible = []
     dropped = {}
     for task_id, weight in weights.items():
-        level = (decisions.get(task_id) or {}).get("level")
-        band = str((decisions.get(task_id) or {}).get("band") or "")
+        decision = decisions.get(task_id) or {}
+        level = decision.get("level")
+        band = str(decision.get("band") or "")
         if level in {None, HintLevel.L0_NONE.value} or band == "mastered":
             dropped[task_id] = {
                 "weight": float(weight),
@@ -29,23 +31,26 @@ def select_curriculum_tasks(manifest: dict, sample_count: int, seed: int):
                 "reason": "non-positive sampling weight",
             }
             continue
-        eligible.append((str(task_id), float(weight)))
+        eligible.append(
+            (str(task_id), student_profile_from_decision(decision), float(weight))
+        )
     if not eligible:
         raise ValueError("dosage manifest has no task with a trainable hint level")
-    normalizer = sum(weight for _, weight in eligible)
+    normalizer = sum(weight for _, _, weight in eligible)
     rng = random.Random(seed)
     chosen = rng.choices(
         eligible,
-        weights=[weight / normalizer for _, weight in eligible],
+        weights=[weight / normalizer for _, _, weight in eligible],
         k=sample_count,
     )
     selections = [
         {
             "task_id": task_id,
             "hint_level": HintLevel.HINTER.value,
+            "student_profile": student_profile,
             "sampling_weight": weight,
         }
-        for task_id, weight in chosen
+        for task_id, student_profile, weight in chosen
     ]
     return selections, dropped, normalizer
 

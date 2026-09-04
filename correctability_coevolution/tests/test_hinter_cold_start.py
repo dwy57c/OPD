@@ -21,6 +21,8 @@ def audit_row(task_id, level, hint):
 
 
 def source(checkpoint):
+    success = 0.1 if checkpoint == "student-a" else 0.6
+    band = "scaffolded" if checkpoint == "student-a" else "frontier"
     return ColdStartSource(
         checkpoint,
         (
@@ -29,8 +31,16 @@ def source(checkpoint):
         ),
         {
             "decisions": {
-                "a": {"level": "L1_POLICY"},
-                "b": {"level": "L2_PROCEDURAL"},
+                "a": {
+                    "level": "L1_POLICY",
+                    "no_hint_score": success,
+                    "band": band,
+                },
+                "b": {
+                    "level": "L2_PROCEDURAL",
+                    "no_hint_score": success,
+                    "band": band,
+                },
             }
         },
     )
@@ -56,6 +66,8 @@ def test_cold_start_requires_multiple_checkpoints_and_doses():
         row["student_checkpoint"]: row["messages"][1]["content"] for row in rows
     }
     assert student_inputs["student-a"] != student_inputs["student-b"]
+    assert "student-a" not in student_inputs["student-a"]
+    assert "student-b" not in student_inputs["student-b"]
 
 
 def test_cold_start_drops_high_copy_rows():

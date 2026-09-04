@@ -64,6 +64,7 @@ pytest -q
 # E1 from a previously collected public-state pool
 python scripts/audit_hint_ladder.py \
   --from-trajectories artifacts/base_states/trajectories.jsonl \
+  --student-profile-manifest artifacts/e1_profile/dosage_manifest.json \
   --output-dir artifacts/e1_hint_audit
 
 # E2; policy and closed-hinter endpoints must already be available

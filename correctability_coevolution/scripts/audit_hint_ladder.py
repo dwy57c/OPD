@@ -18,7 +18,10 @@ from coevo.config import InfraConfig
 from coevo.environment import Tau2Environment
 from coevo.environment.tau2 import dump_messages, load_messages
 from coevo.hints import HINT_LEVELS, HintLevel
-from coevo.hinter_prompt import narrow_privileged_context
+from coevo.hinter_prompt import (
+    narrow_privileged_context,
+    student_profile_from_decision,
+)
 from coevo.hinter_training import (
     TeacherForcedUsefulnessScorer,
     calibrate_copying_weight,
@@ -138,6 +141,7 @@ def _decision(state: dict[str, Any]) -> DecisionState:
 def main() -> None:
     parser = argparse.ArgumentParser(description="E1 static audit of the L0-L3 hint ladder")
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--student-profile-manifest", type=Path, required=True)
     parser.add_argument("--from-trajectories", type=Path)
     parser.add_argument("--task-ids", nargs="+")
     parser.add_argument("--levels", nargs="+", choices=[x.value for x in HINT_LEVELS])
@@ -167,6 +171,10 @@ def main() -> None:
         parser.error("--standard-quality-threshold must be in [0, 1]")
 
     config = InfraConfig.from_env()
+    profile_manifest = json.loads(
+        args.student_profile_manifest.read_text(encoding="utf-8")
+    )
+    profile_decisions = profile_manifest.get("decisions") or {}
     states = (
         _states_from_trajectories(args.from_trajectories)
         if args.from_trajectories
@@ -174,6 +182,18 @@ def main() -> None:
     )
     if args.max_states:
         states = states[: args.max_states]
+    missing_profiles = sorted(
+        {
+            str(state["task_id"])
+            for state in states
+            if str(state["task_id"]) not in profile_decisions
+        }
+    )
+    if missing_profiles:
+        raise ValueError(
+            "student-profile manifest is missing task decisions: "
+            f"{missing_profiles}"
+        )
     levels = [HintLevel.parse(value) for value in (args.levels or [x.value for x in HINT_LEVELS])]
     grounding = None
     if args.use_grounding_judge:
@@ -262,11 +282,9 @@ def main() -> None:
                 "hint_words": len(hint_note.split()),
                 "teacher_action": result.action.model_dump(mode="json"),
                 "public_state": state["history_before"],
-                "student_profile": {
-                    "checkpoint": config.current_policy_checkpoint,
-                    "revision": config.current_policy_revision,
-                    "round_index": config.round_index,
-                },
+                "student_profile": student_profile_from_decision(
+                    profile_decisions[str(state["task_id"])]
+                ),
                 "privileged_context": narrow_privileged_context(public_privilege),
                 "fact_audit_context": fact_audit_context,
                 "student_visible_messages": student_messages,
@@ -356,6 +374,7 @@ def main() -> None:
             ),
             "skip_reasons": skip_reasons,
         },
+        "student_profile_manifest": str(args.student_profile_manifest),
     }
     for level in levels:
         selected = [row for row in rows if row["hint_level"] == level.value]

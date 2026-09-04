@@ -44,6 +44,7 @@ python scripts/collect_round.py \
 
 python scripts/audit_hint_ladder.py \
   --from-trajectories artifacts/public_states/trajectories.jsonl \
+  --student-profile-manifest artifacts/e1_profile/dosage_manifest.json \
   --output-dir artifacts/e1_hint_audit
 ```
 
@@ -103,7 +104,8 @@ COEVO_TEACHER_HINT_URL="$COEVO_HINTER_URL" \
 COEVO_TEACHER_HINT_MODEL="$COEVO_HINTER_MODEL" \
 COEVO_TEACHER_HINT_API_KEY="${COEVO_HINTER_API_KEY:-EMPTY}" \
 python scripts/run_dosage_curriculum.py \
-  --output-dir artifacts/e3_hstar --task-ids 1 2 3 --k 8
+  --output-dir artifacts/e3_hstar --task-ids 1 2 3 --k 8 \
+  --student-profile-manifest artifacts/e3_previous/dosage_manifest.json
 ```
 
 `collect_dosage_curriculum.py` consumes only the sampling weights. Mastered/L0
@@ -114,8 +116,9 @@ rows are excluded, and every selected training row has
 
 Cold start is fail-closed: it requires low-copy rows from at least two Student
 checkpoints and at least two non-zero minimal sufficient doses. The prompt gets
-an explicit `student_profile` containing checkpoint and measured curriculum
-scores, so conflicting h* labels do not share an identical input. Each
+an explicit `student_profile={unhinted_success, curriculum_band}` from h*;
+success is rounded to a 0.1 bucket and checkpoint/revision/round strings are
+never exposed. Thus conflicting h* labels do not share an identical input. Each
 `--source` contains the checkpoint identity, its E1 rows, and its h* manifest.
 
 ```bash

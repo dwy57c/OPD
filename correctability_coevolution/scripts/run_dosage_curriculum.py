@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+from dataclasses import replace
 import json
 from pathlib import Path
 import random
@@ -12,6 +13,7 @@ from coevo.curriculum import (
     probe_scenario,
 )
 from coevo.hints import HINT_LEVELS, HintLevel
+from coevo.hinter_prompt import student_profile_from_decision
 
 
 def main() -> None:
@@ -21,6 +23,7 @@ def main() -> None:
     parser.add_argument("--k", type=int, default=8)
     parser.add_argument("--sufficient", type=float, default=0.5)
     parser.add_argument("--near-zero", type=float, default=0.05)
+    parser.add_argument("--student-profile-manifest", type=Path)
     parser.add_argument("--review-epsilon", type=float, default=0.05)
     parser.add_argument("--explore-epsilon", type=float, default=0.05)
     parser.add_argument(
@@ -30,16 +33,31 @@ def main() -> None:
     )
     args = parser.parse_args()
     config = InfraConfig.from_env()
+    emergent = config.hint_level is HintLevel.HINTER
+    if emergent and args.student_profile_manifest is None:
+        parser.error("HINTER probing requires --student-profile-manifest")
+    profile_decisions = {}
+    if args.student_profile_manifest is not None:
+        profile_decisions = json.loads(
+            args.student_profile_manifest.read_text(encoding="utf-8")
+        ).get("decisions", {})
     probes = {}
     decisions = {}
     rng = random.Random(config.seed)
     for task_id in args.task_ids:
-        emergent = config.hint_level is HintLevel.HINTER
+        task_config = config
+        if emergent:
+            task_config = replace(
+                config,
+                student_profile=student_profile_from_decision(
+                    profile_decisions[str(task_id)]
+                ),
+            )
         probe_levels = (
             (HintLevel.L0_NONE, HintLevel.HINTER) if emergent else HINT_LEVELS
         )
         task_probes = {
-            level: probe_scenario(config, str(task_id), level, args.k)
+            level: probe_scenario(task_config, str(task_id), level, args.k)
             for level in probe_levels
         }
         probes[str(task_id)] = {
@@ -99,6 +117,11 @@ def main() -> None:
         "decisions": {key: value.to_dict() for key, value in decisions.items()},
         "sampling_weights": weights,
         "consumer": "scripts/collect_dosage_curriculum.py",
+        "student_profile_manifest": (
+            str(args.student_profile_manifest)
+            if args.student_profile_manifest is not None
+            else None
+        ),
     }
     args.output_dir.mkdir(parents=True, exist_ok=True)
     (args.output_dir / "dosage_manifest.json").write_text(

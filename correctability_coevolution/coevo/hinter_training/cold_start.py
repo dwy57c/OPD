@@ -3,7 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
-from coevo.hinter_prompt import build_hinter_messages, narrow_privileged_context
+from coevo.hinter_prompt import (
+    build_hinter_messages,
+    narrow_privileged_context,
+    student_profile_from_decision,
+)
 from coevo.hints import HintLevel
 
 
@@ -63,12 +67,7 @@ def build_hinter_cold_start_dataset(
             if float(signals["mean_copy"]) > max_mean_copy:
                 continue
             privileged = narrow_privileged_context(row["privileged_context"])
-            student_profile = {
-                "checkpoint": source.student_checkpoint,
-                "unhinted_success": decision.get("no_hint_score"),
-                "best_hinted_success": decision.get("best_hint_score"),
-                "curriculum_band": decision.get("band"),
-            }
+            student_profile = student_profile_from_decision(decision)
             messages = build_hinter_messages(
                 row["public_state"], privileged, student_profile
             )

@@ -108,9 +108,11 @@ for format, exact tool names, and hidden facts.
 Cold-start SFT is a necessary precondition, not an optional convenience. Its
 builder requires low-copy examples from at least two Student checkpoints and
 at least two non-zero minimal sufficient levels. Each prompt includes a public
-`student_profile` with the checkpoint and measured h* scores, so different
-Students do not produce contradictory targets for an identical input. Rows are
-selected by h* rather than by raw closed-model volume.
+`student_profile={unhinted_success, curriculum_band}` from h*. Success is
+rounded to a 0.1 bucket. Checkpoint paths, revisions, and round indices are
+forbidden, so different Students do not produce contradictory targets for an
+identical input or learn path-name noise. Rows are selected by h* rather than
+by raw closed-model volume.
 
 ## 6. Alternation and acceptance
 

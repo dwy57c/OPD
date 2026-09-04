@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import os
+from typing import Any, Mapping
 
 from coevo.artifacts import model_manifest_revision
 from coevo.hints import HintLevel
@@ -135,6 +136,7 @@ class InfraConfig:
     teacher_hint_mode: str = "closed_model"
     teacher_hinter: HintEndpoint | None = None
     hint_level: HintLevel = HintLevel.L3_ORACLE
+    student_profile: Mapping[str, Any] | None = None
     teacher_anchor: str = "current"
     current_policy_checkpoint: str = ""
     previous_policy_checkpoint: str = ""

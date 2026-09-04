@@ -7,7 +7,7 @@
   "measure_pass_at_k": [
     "bash",
     "-lc",
-    "COEVO_HINT_LEVEL=HINTER COEVO_TEACHER_HINT_MODE=open_hinter COEVO_TEACHER_HINT_URL=\"$COEVO_HINTER_URL\" COEVO_TEACHER_HINT_MODEL=\"$COEVO_HINTER_MODEL\" COEVO_TEACHER_HINT_API_KEY=\"${COEVO_HINTER_API_KEY:-EMPTY}\" python scripts/run_dosage_curriculum.py --output-dir \"{round_dir}/dosage\" --task-ids $COEVO_ALTERNATING_TASK_IDS --k {pass_k} --policy hstar && python scripts/stages/probe_result.py --manifest \"{round_dir}/dosage/dosage_manifest.json\" --output \"{output}\""
+    "COEVO_HINT_LEVEL=HINTER COEVO_TEACHER_HINT_MODE=open_hinter COEVO_TEACHER_HINT_URL=\"$COEVO_HINTER_URL\" COEVO_TEACHER_HINT_MODEL=\"$COEVO_HINTER_MODEL\" COEVO_TEACHER_HINT_API_KEY=\"${COEVO_HINTER_API_KEY:-EMPTY}\" python scripts/run_dosage_curriculum.py --output-dir \"{round_dir}/dosage\" --task-ids $COEVO_ALTERNATING_TASK_IDS --k {pass_k} --policy hstar --student-profile-manifest \"{curriculum_manifest}\" && python scripts/stages/probe_result.py --manifest \"{round_dir}/dosage/dosage_manifest.json\" --output \"{output}\""
   ],
   "schedule_curriculum": [
     "python",
@@ -20,7 +20,7 @@
   "train_hinter_grpo": [
     "bash",
     "-lc",
-    "python scripts/filter_hinter_grpo_dataset.py \"$COEVO_HINTER_GRPO_DATASET\" \"{curriculum}\" \"{round_dir}/scheduled_hinter_grpo.jsonl\" && COEVO_CURRENT_POLICY_CHECKPOINT=\"{student}\" COEVO_HINTER_BASE_MODEL=\"{hinter}\" COEVO_HINTER_TUNER_TYPE=full bash scripts/train_hinter_grpo.sh \"{round_dir}/scheduled_hinter_grpo.jsonl\" \"{round_dir}/hinter\" {hinter_steps} && python scripts/stages/checkpoint_result.py --checkpoint-root \"{round_dir}/hinter\" --refresh-role hinter --output \"{output}\""
+    "python scripts/filter_hinter_grpo_dataset.py \"$COEVO_HINTER_GRPO_DATASET\" \"{curriculum}\" \"{round_dir}/scheduled_hinter_grpo.jsonl\" --profile-manifest \"{round_dir}/dosage/dosage_manifest.json\" && COEVO_CURRENT_POLICY_CHECKPOINT=\"{student}\" COEVO_HINTER_BASE_MODEL=\"{hinter}\" COEVO_HINTER_TUNER_TYPE=full bash scripts/train_hinter_grpo.sh \"{round_dir}/scheduled_hinter_grpo.jsonl\" \"{round_dir}/hinter\" {hinter_steps} && python scripts/stages/checkpoint_result.py --checkpoint-root \"{round_dir}/hinter\" --refresh-role hinter --output \"{output}\""
   ],
   "rollback_student": [
     "bash",

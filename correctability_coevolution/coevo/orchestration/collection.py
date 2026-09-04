@@ -409,6 +409,7 @@ def collect_mixed_dosage_dataset(
     for sample_index, selection in enumerate(selections):
         task_id = str(selection["task_id"])
         level = HintLevel.HINTER
+        student_profile = dict(selection["student_profile"])
         candidates = by_task.get(task_id) or []
         if not candidates:
             raise ValueError(f"source pool has no trajectory for task {task_id!r}")
@@ -424,6 +425,7 @@ def collect_mixed_dosage_dataset(
                 task_split=str(source.get("task_split", config.task_split)),
                 task_id=task_id,
                 hint_level=level,
+                student_profile=student_profile,
             )
         )
         collector = NaturalDecisionCollector(
@@ -446,6 +448,7 @@ def collect_mixed_dosage_dataset(
             **artifact_metadata(environment.config),
             "hint_level": "MIXED",
             "sample_hint_level": HintLevel.HINTER.value,
+            "student_profile": student_profile,
             "curriculum_sample_index": sample_index,
             "domain": environment.config.domain,
             "task_split": environment.config.task_split,
@@ -459,11 +462,13 @@ def collect_mixed_dosage_dataset(
         records.append(record)
         for row in collector.student_rows(record):
             row["sample_hint_level"] = HintLevel.HINTER.value
+            row["student_profile"] = student_profile
             row["hint_level"] = "MIXED"
             row["curriculum_sample_index"] = sample_index
             student_rows.append(row)
         buyer_row = collector.buyer_row()
         buyer_row["sample_hint_level"] = HintLevel.HINTER.value
+        buyer_row["student_profile"] = student_profile
         buyer_row["hint_level"] = "MIXED"
         buyer_row["curriculum_sample_index"] = sample_index
         buyer_rows.append(buyer_row)
