@@ -1,0 +1,540 @@
+{
+  "metric": "KL(p_theta(.|s,h,a_<t) || p_theta(.|h,a_<t))",
+  "vocabulary": 151936,
+  "computation": "full vocabulary; BF16 model forward, FP32 log_softmax and KL; no top-k or clipping",
+  "aggregation": "mean tokens within action, mean turns within session, equal session mean",
+  "query_definition": "goal + last 6 history messages + current observation + admissible command list",
+  "reference_source": "ALFWorld built-in rule-expert trace saved by preceding E1",
+  "hint_model": "glm-5.3-flash (unchanged saved hints)",
+  "policy": "/models/policy",
+  "limitations": [
+    "3 different games, one session each; stored seed labels were not applied to the environment",
+    "teacher-forced expert states, no autonomous policy rollout",
+    "one oracle reference per session; successful-student reference pool not used"
+  ],
+  "input_sha256": {
+    "sessions.jsonl": "fdd4b771018f1a34f8c9ab626ff4eb8e4767e1cd060607dd5da8d2730c013d8a",
+    "task_hints.jsonl": "2467997eb764b23f2bc0d8095490e15e9ad40d0b97586f7be6f4ac789ec81d21",
+    "audit_rows.jsonl": "3f2f6fa95d4c6d1d1e1cf142927a29fe7484b55fc1a6c9a73fdbf26281912e44"
+  },
+  "rows": 428,
+  "expected_rows": 428,
+  "rejected_session_levels": [],
+  "elapsed_seconds": 26.297865960747004,
+  "levels": {
+    "L0_NONE": {
+      "sessions": 3,
+      "query_kl": 6.758935684726027,
+      "reverse_kl": 20.491956290019925,
+      "js_divergence": 0.4262182801346679,
+      "first_token_query_kl": 3.4031792920216795,
+      "phases": {
+        "initial": {
+          "query_kl": 0.6717534164587656,
+          "reverse_kl": 10.686746597290039,
+          "js_divergence": 0.20757040878136954,
+          "first_token_query_kl": 0.6717534164587656
+        },
+        "before_pickup": {
+          "query_kl": 6.877984863002421,
+          "reverse_kl": 20.372172708187467,
+          "js_divergence": 0.4316302060997466,
+          "first_token_query_kl": 3.5739717672863343
+        },
+        "pickup_onwards": {
+          "query_kl": 6.176875380674997,
+          "reverse_kl": 21.157406340705023,
+          "js_divergence": 0.3974352780315611,
+          "first_token_query_kl": 2.5635243150922986
+        }
+      }
+    },
+    "L1_POLICY": {
+      "sessions": 3,
+      "query_kl": 6.197160161257908,
+      "reverse_kl": 21.716169253338915,
+      "js_divergence": 0.46221805605074917,
+      "first_token_query_kl": 8.39506513150649,
+      "phases": {
+        "initial": {
+          "query_kl": 5.169088403383891,
+          "reverse_kl": 24.088876724243164,
+          "js_divergence": 0.5722359319527944,
+          "first_token_query_kl": 5.169088403383891
+        },
+        "before_pickup": {
+          "query_kl": 6.31016550580411,
+          "reverse_kl": 21.897581167949994,
+          "js_divergence": 0.47284605057704604,
+          "first_token_query_kl": 8.592702666070926
+        },
+        "pickup_onwards": {
+          "query_kl": 5.57865020301607,
+          "reverse_kl": 20.724593957265217,
+          "js_divergence": 0.40348923703034717,
+          "first_token_query_kl": 7.2314208486013944
+        }
+      }
+    },
+    "L2_PROCEDURAL": {
+      "sessions": 3,
+      "query_kl": 6.273030175236698,
+      "reverse_kl": 16.852722551955193,
+      "js_divergence": 0.3925843859943167,
+      "first_token_query_kl": 7.6690086618275215,
+      "phases": {
+        "initial": {
+          "query_kl": 10.462669054667154,
+          "reverse_kl": 21.661336580912273,
+          "js_divergence": 0.6924083630243937,
+          "first_token_query_kl": 10.462669054667154
+        },
+        "before_pickup": {
+          "query_kl": 6.356623027259679,
+          "reverse_kl": 17.07518564688759,
+          "js_divergence": 0.4009514126954035,
+          "first_token_query_kl": 7.031247075613847
+        },
+        "pickup_onwards": {
+          "query_kl": 5.929354325268004,
+          "reverse_kl": 15.908131652408175,
+          "js_divergence": 0.3534194383356306,
+          "first_token_query_kl": 11.119251842494123
+        }
+      }
+    },
+    "L3_ORACLE": {
+      "sessions": 3,
+      "query_kl": 3.3421312848357494,
+      "reverse_kl": 10.027095418978245,
+      "js_divergence": 0.21899472343134274,
+      "first_token_query_kl": 5.489666868270145,
+      "phases": {
+        "initial": {
+          "query_kl": 3.5071774849978588,
+          "reverse_kl": 21.878801201780636,
+          "js_divergence": 0.4511939349273841,
+          "first_token_query_kl": 3.5071774849978588
+        },
+        "before_pickup": {
+          "query_kl": 3.130965090942082,
+          "reverse_kl": 10.637569464651365,
+          "js_divergence": 0.23216235897061063,
+          "first_token_query_kl": 3.96411624914898
+        },
+        "pickup_onwards": {
+          "query_kl": 4.511588931083679,
+          "reverse_kl": 7.343497573004828,
+          "js_divergence": 0.1630690663380341,
+          "first_token_query_kl": 13.678759864546981
+        }
+      }
+    }
+  },
+  "per_session": [
+    {
+      "session_id": "valid_seen/pick_heat_then_place_in_recep-Mug-None-Cabinet-3/trial_T20190909_014639_335717:42",
+      "level": "L0_NONE",
+      "turns": 47,
+      "query_kl": 5.8756192225091,
+      "reverse_kl": 21.22616321482557,
+      "js_divergence": 0.45017192116443144,
+      "first_token_query_kl": 3.366583613639182,
+      "phases": {
+        "initial": {
+          "turns": 1,
+          "query_kl": 0.7441229224205017,
+          "reverse_kl": 10.392934799194336,
+          "js_divergence": 0.2258106768131256,
+          "first_token_query_kl": 0.7441229224205017
+        },
+        "before_pickup": {
+          "turns": 41,
+          "query_kl": 5.939908491402138,
+          "reverse_kl": 21.07806591871308,
+          "js_divergence": 0.4562924108127268,
+          "first_token_query_kl": 3.4820831229047076
+        },
+        "pickup_onwards": {
+          "turns": 6,
+          "query_kl": 5.436309218406677,
+          "reverse_kl": 22.23816140492757,
+          "js_divergence": 0.40834857523441315,
+          "first_token_query_kl": 2.5773369669914246
+        }
+      }
+    },
+    {
+      "session_id": "valid_seen/pick_heat_then_place_in_recep-Mug-None-Cabinet-3/trial_T20190909_014639_335717:42",
+      "level": "L1_POLICY",
+      "turns": 47,
+      "query_kl": 6.178282243140201,
+      "reverse_kl": 22.03457799870917,
+      "js_divergence": 0.4727480563711613,
+      "first_token_query_kl": 12.399819368536168,
+      "phases": {
+        "initial": {
+          "turns": 1,
+          "query_kl": 4.39097261428833,
+          "reverse_kl": 26.597253799438477,
+          "js_divergence": 0.6596260666847229,
+          "first_token_query_kl": 4.39097261428833
+        },
+        "before_pickup": {
+          "turns": 41,
+          "query_kl": 6.319372037561928,
+          "reverse_kl": 22.263456740030428,
+          "js_divergence": 0.4866949072698267,
+          "first_token_query_kl": 12.764172743392608
+        },
+        "pickup_onwards": {
+          "turns": 6,
+          "query_kl": 5.214168647925059,
+          "reverse_kl": 20.470573266347248,
+          "js_divergence": 0.3774445752302806,
+          "first_token_query_kl": 9.910071307017157
+        }
+      }
+    },
+    {
+      "session_id": "valid_seen/pick_heat_then_place_in_recep-Mug-None-Cabinet-3/trial_T20190909_014639_335717:42",
+      "level": "L2_PROCEDURAL",
+      "turns": 47,
+      "query_kl": 4.393317214827588,
+      "reverse_kl": 15.193419644173156,
+      "js_divergence": 0.35464021024551795,
+      "first_token_query_kl": 6.03280954926889,
+      "phases": {
+        "initial": {
+          "turns": 1,
+          "query_kl": 10.208341598510742,
+          "reverse_kl": 12.570439338684082,
+          "js_divergence": 0.6926026344299316,
+          "first_token_query_kl": 10.208341598510742
+        },
+        "before_pickup": {
+          "turns": 41,
+          "query_kl": 4.354541462914246,
+          "reverse_kl": 15.122657851475042,
+          "js_divergence": 0.3571584940683551,
+          "first_token_query_kl": 5.314926383062834
+        },
+        "pickup_onwards": {
+          "turns": 6,
+          "query_kl": 4.658284852902095,
+          "reverse_kl": 15.676958560943604,
+          "js_divergence": 0.337431937456131,
+          "first_token_query_kl": 10.938344518343607
+        }
+      }
+    },
+    {
+      "session_id": "valid_seen/pick_heat_then_place_in_recep-Mug-None-Cabinet-3/trial_T20190909_014639_335717:42",
+      "level": "L3_ORACLE",
+      "turns": 47,
+      "query_kl": 3.051256010457477,
+      "reverse_kl": 7.087660392548176,
+      "js_divergence": 0.1671549321370239,
+      "first_token_query_kl": 2.236617639868897,
+      "phases": {
+        "initial": {
+          "turns": 1,
+          "query_kl": 0.007736125495284796,
+          "reverse_kl": 0.159366175532341,
+          "js_divergence": 0.0026782341301441193,
+          "first_token_query_kl": 0.007736125495284796
+        },
+        "before_pickup": {
+          "turns": 41,
+          "query_kl": 2.81101583629256,
+          "reverse_kl": 7.097512534478816,
+          "js_divergence": 0.1650101857078148,
+          "first_token_query_kl": 0.617708168583127
+        },
+        "pickup_onwards": {
+          "turns": 6,
+          "query_kl": 4.692897200584412,
+          "reverse_kl": 7.020337422688802,
+          "js_divergence": 0.18181069940328598,
+          "first_token_query_kl": 13.29916569365499
+        }
+      }
+    },
+    {
+      "session_id": "valid_seen/pick_heat_then_place_in_recep-Mug-None-CoffeeMachine-1/trial_T20190907_222640_487432:43",
+      "level": "L0_NONE",
+      "turns": 32,
+      "query_kl": 6.644262627698481,
+      "reverse_kl": 19.031731605529785,
+      "js_divergence": 0.4178107175976038,
+      "first_token_query_kl": 4.080851388163865,
+      "phases": {
+        "initial": {
+          "turns": 1,
+          "query_kl": 0.4970047175884247,
+          "reverse_kl": 9.560796737670898,
+          "js_divergence": 0.15967558324337006,
+          "first_token_query_kl": 0.4970047175884247
+        },
+        "before_pickup": {
+          "turns": 26,
+          "query_kl": 6.7953018099069595,
+          "reverse_kl": 19.07892946096567,
+          "js_divergence": 0.425328213434953,
+          "first_token_query_kl": 4.440551882753005
+        },
+        "pickup_onwards": {
+          "turns": 6,
+          "query_kl": 5.9897595047950745,
+          "reverse_kl": 18.827207565307617,
+          "js_divergence": 0.38523490230242413,
+          "first_token_query_kl": 2.5221492449442544
+        }
+      }
+    },
+    {
+      "session_id": "valid_seen/pick_heat_then_place_in_recep-Mug-None-CoffeeMachine-1/trial_T20190907_222640_487432:43",
+      "level": "L1_POLICY",
+      "turns": 32,
+      "query_kl": 5.691403899341822,
+      "reverse_kl": 20.299568086862564,
+      "js_divergence": 0.4461068920791149,
+      "first_token_query_kl": 3.640398036688566,
+      "phases": {
+        "initial": {
+          "turns": 1,
+          "query_kl": 1.3230873346328735,
+          "reverse_kl": 16.568042755126953,
+          "js_divergence": 0.3656756579875946,
+          "first_token_query_kl": 1.3230873346328735
+        },
+        "before_pickup": {
+          "turns": 26,
+          "query_kl": 5.762820477669056,
+          "reverse_kl": 20.449272045722374,
+          "js_divergence": 0.4522112711117818,
+          "first_token_query_kl": 3.828601782138531
+        },
+        "pickup_onwards": {
+          "turns": 6,
+          "query_kl": 5.381932059923808,
+          "reverse_kl": 19.650850931803387,
+          "js_divergence": 0.4196545829375585,
+          "first_token_query_kl": 2.824848473072052
+        }
+      }
+    },
+    {
+      "session_id": "valid_seen/pick_heat_then_place_in_recep-Mug-None-CoffeeMachine-1/trial_T20190907_222640_487432:43",
+      "level": "L2_PROCEDURAL",
+      "turns": 32,
+      "query_kl": 8.004089820606168,
+      "reverse_kl": 15.361122857197188,
+      "js_divergence": 0.41227560184779577,
+      "first_token_query_kl": 11.467071301747637,
+      "phases": {
+        "initial": {
+          "turns": 1,
+          "query_kl": 9.377447128295898,
+          "reverse_kl": 25.622468948364258,
+          "js_divergence": 0.6927080154418945,
+          "first_token_query_kl": 9.377447128295898
+        },
+        "before_pickup": {
+          "turns": 26,
+          "query_kl": 8.138919678373405,
+          "reverse_kl": 15.654310386198071,
+          "js_divergence": 0.4257541994850796,
+          "first_token_query_kl": 11.265873480713568
+        },
+        "pickup_onwards": {
+          "turns": 6,
+          "query_kl": 7.419827103614807,
+          "reverse_kl": 14.090643564860025,
+          "js_divergence": 0.35386834541956586,
+          "first_token_query_kl": 12.338928526228605
+        }
+      }
+    },
+    {
+      "session_id": "valid_seen/pick_heat_then_place_in_recep-Mug-None-CoffeeMachine-1/trial_T20190907_222640_487432:43",
+      "level": "L3_ORACLE",
+      "turns": 32,
+      "query_kl": 3.0319154511671513,
+      "reverse_kl": 12.376500830054283,
+      "js_divergence": 0.26415726587583777,
+      "first_token_query_kl": 4.605048421304673,
+      "phases": {
+        "initial": {
+          "turns": 1,
+          "query_kl": 4.760542869567871,
+          "reverse_kl": 34.34768295288086,
+          "js_divergence": 0.668471097946167,
+          "first_token_query_kl": 4.760542869567871
+        },
+        "before_pickup": {
+          "turns": 26,
+          "query_kl": 3.2484519788278985,
+          "reverse_kl": 13.860568615106436,
+          "js_divergence": 0.29845651138860446,
+          "first_token_query_kl": 4.2267332678804035
+        },
+        "pickup_onwards": {
+          "turns": 6,
+          "query_kl": 2.093590497970581,
+          "reverse_kl": 5.945540428161621,
+          "js_divergence": 0.1155272019871821,
+          "first_token_query_kl": 6.244414086143176
+        }
+      }
+    },
+    {
+      "session_id": "valid_seen/pick_heat_then_place_in_recep-Mug-None-SideTable-21/trial_T20190909_090729_088825:44",
+      "level": "L0_NONE",
+      "turns": 28,
+      "query_kl": 7.756925203970501,
+      "reverse_kl": 21.217974049704416,
+      "js_divergence": 0.4106722016419683,
+      "first_token_query_kl": 2.762102874261992,
+      "phases": {
+        "initial": {
+          "turns": 1,
+          "query_kl": 0.7741326093673706,
+          "reverse_kl": 12.106508255004883,
+          "js_divergence": 0.23722496628761292,
+          "first_token_query_kl": 0.7741326093673706
+        },
+        "before_pickup": {
+          "turns": 23,
+          "query_kl": 7.8987442876981655,
+          "reverse_kl": 20.95952274488366,
+          "js_divergence": 0.4132699940515601,
+          "first_token_query_kl": 2.7992802962012915
+        },
+        "pickup_onwards": {
+          "turns": 5,
+          "query_kl": 7.1045574188232425,
+          "reverse_kl": 22.406850051879882,
+          "js_divergence": 0.39872235655784605,
+          "first_token_query_kl": 2.591086733341217
+        }
+      }
+    },
+    {
+      "session_id": "valid_seen/pick_heat_then_place_in_recep-Mug-None-SideTable-21/trial_T20190909_090729_088825:44",
+      "level": "L1_POLICY",
+      "turns": 28,
+      "query_kl": 6.7217943412917,
+      "reverse_kl": 22.814361674445017,
+      "js_divergence": 0.4677992197019713,
+      "first_token_query_kl": 9.144977989294732,
+      "phases": {
+        "initial": {
+          "turns": 1,
+          "query_kl": 9.793205261230469,
+          "reverse_kl": 29.101333618164062,
+          "js_divergence": 0.6914060711860657,
+          "first_token_query_kl": 9.793205261230469
+        },
+        "before_pickup": {
+          "turns": 23,
+          "query_kl": 6.848304002181344,
+          "reverse_kl": 22.980014718097188,
+          "js_divergence": 0.4796319733495298,
+          "first_token_query_kl": 9.185333472681636
+        },
+        "pickup_onwards": {
+          "turns": 5,
+          "query_kl": 6.139849901199341,
+          "reverse_kl": 22.05235767364502,
+          "js_divergence": 0.4133685529232025,
+          "first_token_query_kl": 8.959342765714974
+        }
+      }
+    },
+    {
+      "session_id": "valid_seen/pick_heat_then_place_in_recep-Mug-None-SideTable-21/trial_T20190909_090729_088825:44",
+      "level": "L2_PROCEDURAL",
+      "turns": 28,
+      "query_kl": 6.421683490276337,
+      "reverse_kl": 20.00362515449524,
+      "js_divergence": 0.41083734588963644,
+      "first_token_query_kl": 5.507145134466035,
+      "phases": {
+        "initial": {
+          "turns": 1,
+          "query_kl": 11.802218437194824,
+          "reverse_kl": 26.791101455688477,
+          "js_divergence": 0.691914439201355,
+          "first_token_query_kl": 11.802218437194824
+        },
+        "before_pickup": {
+          "turns": 23,
+          "query_kl": 6.576407940491386,
+          "reverse_kl": 20.44858870298966,
+          "js_divergence": 0.4199415445327759,
+          "first_token_query_kl": 4.512941363065139
+        },
+        "pickup_onwards": {
+          "turns": 5,
+          "query_kl": 5.709951019287109,
+          "reverse_kl": 17.9567928314209,
+          "js_divergence": 0.36895803213119505,
+          "first_token_query_kl": 10.080482482910156
+        }
+      }
+    },
+    {
+      "session_id": "valid_seen/pick_heat_then_place_in_recep-Mug-None-SideTable-21/trial_T20190909_090729_088825:44",
+      "level": "L3_ORACLE",
+      "turns": 28,
+      "query_kl": 3.9432223928826198,
+      "reverse_kl": 10.617125034332275,
+      "js_divergence": 0.22567197228116648,
+      "first_token_query_kl": 9.627334543636866,
+      "phases": {
+        "initial": {
+          "turns": 1,
+          "query_kl": 5.75325345993042,
+          "reverse_kl": 31.12935447692871,
+          "js_divergence": 0.6824324727058411,
+          "first_token_query_kl": 5.75325345993042
+        },
+        "before_pickup": {
+          "turns": 23,
+          "query_kl": 3.333427457705788,
+          "reverse_kl": 10.954627244368844,
+          "js_divergence": 0.2330203798154126,
+          "first_token_query_kl": 7.047907310983409
+        },
+        "pickup_onwards": {
+          "turns": 5,
+          "query_kl": 6.748279094696045,
+          "reverse_kl": 9.064614868164062,
+          "js_divergence": 0.19186929762363433,
+          "first_token_query_kl": 21.492699813842773
+        }
+      }
+    }
+  ],
+  "paired_l3_vs_l2": [
+    {
+      "session_id": "valid_seen/pick_heat_then_place_in_recep-Mug-None-Cabinet-3/trial_T20190909_014639_335717:42",
+      "l3_minus_l2_query_kl": -1.3420612043701112,
+      "l3_less_than_l2": true,
+      "initial_l3_minus_l2_query_kl": -10.200605473015457
+    },
+    {
+      "session_id": "valid_seen/pick_heat_then_place_in_recep-Mug-None-CoffeeMachine-1/trial_T20190907_222640_487432:43",
+      "l3_minus_l2_query_kl": -4.972174369439017,
+      "l3_less_than_l2": true,
+      "initial_l3_minus_l2_query_kl": -4.616904258728027
+    },
+    {
+      "session_id": "valid_seen/pick_heat_then_place_in_recep-Mug-None-SideTable-21/trial_T20190909_090729_088825:44",
+      "l3_minus_l2_query_kl": -2.478461097393717,
+      "l3_less_than_l2": true,
+      "initial_l3_minus_l2_query_kl": -6.048964977264404
+    }
+  ]
+}
