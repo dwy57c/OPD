@@ -264,14 +264,21 @@ class TeacherTargetLabeler:
         self.environment = environment
         self.teacher_generator = teacher_generator or TeacherActionGenerator(environment)
 
-    def run(self, decision: DecisionState) -> TeacherTargetLabel:
+    def run(
+        self, decision: DecisionState, *, seed: int | None = None
+    ) -> TeacherTargetLabel:
+        trajectory_seed = self.environment.config.seed if seed is None else seed
         teacher_action = self.teacher_generator.generate(
-            decision, self.environment.config.seed
+            decision, trajectory_seed
         )
         return TeacherTargetLabel(decision, teacher_action)
 
-    def score_decision(self, history, message_index: int) -> dict:
-        return self.run(DecisionState.from_history(history, message_index)).to_dict()
+    def score_decision(
+        self, history, message_index: int, *, seed: int | None = None
+    ) -> dict:
+        return self.run(
+            DecisionState.from_history(history, message_index), seed=seed
+        ).to_dict()
 
 
 @dataclass(frozen=True)

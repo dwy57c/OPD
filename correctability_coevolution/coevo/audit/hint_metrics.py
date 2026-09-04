@@ -24,6 +24,14 @@ def aggregate_session_signals(rows: Iterable[Mapping[str, Any]]) -> dict[str, An
                 / len(values),
                 "mean_copy": sum(float(value["mean_copy"]) for value in values)
                 / len(values),
+                "mean_hint_only_vs_empty": sum(
+                    float(value["mean_hint_only_vs_empty"])
+                    for value in values
+                    if "mean_hint_only_vs_empty" in value
+                )
+                / sum("mean_hint_only_vs_empty" in value for value in values)
+                if any("mean_hint_only_vs_empty" in value for value in values)
+                else None,
             }
         )
     return {
@@ -37,6 +45,20 @@ def aggregate_session_signals(rows: Iterable[Mapping[str, Any]]) -> dict[str, An
         "mean_copy": (
             sum(row["mean_copy"] for row in session_rows) / len(session_rows)
             if session_rows
+            else None
+        ),
+        "mean_hint_only_vs_empty": (
+            sum(
+                row["mean_hint_only_vs_empty"]
+                for row in session_rows
+                if row["mean_hint_only_vs_empty"] is not None
+            )
+            / sum(
+                row["mean_hint_only_vs_empty"] is not None for row in session_rows
+            )
+            if any(
+                row["mean_hint_only_vs_empty"] is not None for row in session_rows
+            )
             else None
         ),
         "per_session": session_rows,

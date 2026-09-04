@@ -80,6 +80,13 @@ def summarize_level_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 / len(scored),
             }
         )
+        diagnostic = [
+            row["mean_hint_only_vs_empty"]
+            for row in scored
+            if "mean_hint_only_vs_empty" in row
+        ]
+        if diagnostic:
+            result["mean_hint_only_vs_empty"] = sum(diagnostic) / len(diagnostic)
     result["session_analytical"] = aggregate_session_signals(valid)
     return result
 

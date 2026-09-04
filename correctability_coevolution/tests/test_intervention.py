@@ -133,15 +133,39 @@ def test_main_target_labeler_does_not_run_a_takeover_continuation():
     assert result.teacher_action.hint == {"seed": 7}
 
 
-def test_teacher_generator_creates_one_hint_from_initial_state_per_task():
-    calls = []
-    hint = object()
+def test_target_labeler_forwards_the_trajectory_seed():
+    seen = []
 
-    class Agent:
+    class Environment:
+        config = SimpleNamespace(seed=7)
+
+    class Generator:
         @staticmethod
-        def plan_for_session(history):
-            calls.append(history)
-            return hint
+        def generate(decision, seed):
+            seen.append(seed)
+            return TeacherActionResult(
+                AssistantMessage(role="assistant", content="repair"),
+                {"seed": seed},
+            )
+
+    state = DecisionState.from_history(
+        [
+            UserMessage(role="user", content="help"),
+            AssistantMessage(role="assistant", content="mistake"),
+        ],
+        1,
+    )
+    result = TeacherTargetLabeler(
+        Environment(), teacher_generator=Generator()
+    ).run(state, seed=11)
+
+    assert seen == [11]
+    assert result.teacher_action.hint == {"seed": 11}
+
+
+def test_teacher_generator_creates_one_hint_per_seeded_session():
+    calls = []
+    hints = {7: object(), 8: object()}
 
     class Environment:
         @staticmethod
@@ -151,14 +175,23 @@ def test_teacher_generator_creates_one_hint_from_initial_state_per_task():
         @staticmethod
         def orchestrator(history, policy, seed):
             assert policy == "teacher"
-            return SimpleNamespace(agent=Agent())
+            return SimpleNamespace(
+                agent=SimpleNamespace(
+                    plan_for_session=lambda public_history: (
+                        calls.append((seed, public_history)) or hints[seed]
+                    )
+                )
+            )
 
     generator = TeacherActionGenerator(Environment())
     first_state = [UserMessage(role="user", content="actual task request")]
-    assert generator.task_hint(7, first_state) is hint
-    assert generator.task_hint(8) is hint
-    assert len(calls) == 1
-    assert calls[0][0].content == "actual task request"
+    second_state = [UserMessage(role="user", content="second seeded session")]
+    assert generator.task_hint(7, first_state) is hints[7]
+    assert generator.task_hint(7, second_state) is hints[7]
+    assert generator.task_hint(8, second_state) is hints[8]
+    assert len(calls) == 2
+    assert calls[0][1][0].content == "actual task request"
+    assert calls[1][1][0].content == "second seeded session"
 
 
 def test_analysis_validator_can_run_one_sided_student_continuations():

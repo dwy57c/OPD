@@ -45,17 +45,19 @@ r_t = p_theta(a*_t | h)       # system prompt + hint, no dialogue history
 e_t = p_theta(a*_t | empty)   # same system prompt, no hint or dialogue history
 
 lift_t = clip(log q_t - log p_t, -c, c)
-copy_t = clip(max(log r_t - log e_t, 0), 0, c)
+copy_t = clip(max(log r_t - log p_t, 0), 0, c)
+raw_hint_prior_t = log r_t - log e_t  # diagnostic only
 dose   = max(mean_t KL(q_t || p_t) - bandwidth, 0)
 
 R(h) = mean(lift_t) - lambda mean(copy_t) - nu dose - mu tokens(h)
 ```
 
-The empty-context subtraction isolates what the hint itself contributes. It
-prevents a generic no-state prior (for example, a household model defaulting to
-`countertop`) from being charged as copying merely because the full public
-state contains many competing locations. `mean_copy` is clipped nats per target
-token, not a probability or a fraction of copied tokens.
+The state-conditioned subtraction asks whether the hint alone predicts the
+standard action better than the public state does. This avoids charging a clean
+procedural hint merely for mentioning the task. The empty-context view remains
+in the raw trace as `raw_hint_prior_t`; it is a diagnostic and never enters the
+reward. `mean_copy` is clipped nats per target token, not a probability or a
+fraction of copied tokens.
 
 E1 aggregates in two stages: token means form one decision-turn score, then
 turns are averaged within each session, and sessions receive equal weight.

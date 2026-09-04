@@ -18,7 +18,7 @@ HINTER_SYSTEM_PROMPT = """
 Write the smallest private hint that helps the current agent choose its next
 turn for the Student described by `student_profile`. The training reward
 separately measures useful state-conditioned lift,
-answer copying that survives without the state, distributional dose, and
+    answer copying beyond what the public state supports, distributional dose, and
 length. Convert hidden instance facts into an evidence-acquisition procedure
 whenever possible. Do not output exact function names, executable commands,
 argument keys, JSON, code, bullet lists, or a public reply. Use no more than

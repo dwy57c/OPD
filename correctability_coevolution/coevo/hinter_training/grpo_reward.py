@@ -71,6 +71,7 @@ class TeacherForcedProbabilityTrace:
     empty_context_actual_logprobs: tuple[float, ...]
     raw_token_lifts: tuple[float, ...]
     raw_token_copies: tuple[float, ...]
+    raw_token_hint_only_vs_empty: tuple[float, ...]
     token_lifts: tuple[float, ...]
     token_copies: tuple[float, ...]
     token_dose_kls: tuple[float, ...]
@@ -102,6 +103,19 @@ class TeacherForcedProbabilityTrace:
             ),
             raw_token_lifts=tuple(float(item) for item in value["raw_token_lifts"]),
             raw_token_copies=tuple(float(item) for item in value["raw_token_copies"]),
+            raw_token_hint_only_vs_empty=tuple(
+                float(item)
+                for item in value.get(
+                    "raw_token_hint_only_vs_empty",
+                    (
+                        float(hint_log) - float(empty_log)
+                        for hint_log, empty_log in zip(
+                            value["hint_only_actual_logprobs"],
+                            value["empty_context_actual_logprobs"],
+                        )
+                    ),
+                )
+            ),
             token_lifts=tuple(float(item) for item in value["token_lifts"]),
             token_copies=tuple(float(item) for item in value["token_copies"]),
             token_dose_kls=tuple(float(item) for item in value["token_dose_kls"]),
@@ -110,7 +124,7 @@ class TeacherForcedProbabilityTrace:
 
 @dataclass(frozen=True)
 class TeacherForcedUsefulness:
-    """Three-view token signals for one fixed standard action trajectory."""
+    """Four-view token signals for one fixed standard action trajectory."""
 
     unhinted_log_probability: float
     hinted_log_probability: float
@@ -129,6 +143,11 @@ class TeacherForcedUsefulness:
     @property
     def per_token_gain(self) -> float:
         return self.mean_lift
+
+    @property
+    def mean_hint_only_vs_empty(self) -> float:
+        values = self.probability_trace.raw_token_hint_only_vs_empty
+        return sum(values) / len(values)
 
     @property
     def transferable_mass(self) -> float:
@@ -166,6 +185,7 @@ class TeacherForcedUsefulness:
             "log_probability_gain": self.log_probability_gain,
             "mean_lift": self.mean_lift,
             "mean_copy": self.mean_copy,
+            "mean_hint_only_vs_empty": self.mean_hint_only_vs_empty,
             "mean_dose_kl": self.mean_dose_kl,
             "copy_fraction": self.copy_fraction,
             "transferable_fraction": self.transferable_fraction,
@@ -191,6 +211,12 @@ class TeacherForcedSessionUsefulness:
         return sum(turn.mean_copy for turn in self.turns) / len(self.turns)
 
     @property
+    def mean_hint_only_vs_empty(self) -> float:
+        return sum(turn.mean_hint_only_vs_empty for turn in self.turns) / len(
+            self.turns
+        )
+
+    @property
     def mean_dose_kl(self) -> float:
         return sum(turn.mean_dose_kl for turn in self.turns) / len(self.turns)
 
@@ -200,6 +226,7 @@ class TeacherForcedSessionUsefulness:
             "target_tokens": sum(turn.target_token_count for turn in self.turns),
             "mean_lift": self.mean_lift,
             "mean_copy": self.mean_copy,
+            "mean_hint_only_vs_empty": self.mean_hint_only_vs_empty,
             "mean_dose_kl": self.mean_dose_kl,
             "per_turn": [turn.to_dict() for turn in self.turns],
         }
@@ -455,7 +482,11 @@ class TeacherForcedUsefulnessScorer:
             q_value - p_value for q_value, p_value in zip(q_logs, p_logs)
         )
         raw_copies = tuple(
-            max(0.0, h_value - empty_value)
+            max(0.0, h_value - p_value)
+            for h_value, p_value in zip(h_logs, p_logs)
+        )
+        raw_hint_only_vs_empty = tuple(
+            h_value - empty_value
             for h_value, empty_value in zip(h_logs, empty_logs)
         )
         lifts = tuple(_clip(value, self.token_clip) for value in raw_lifts)
@@ -472,6 +503,7 @@ class TeacherForcedUsefulnessScorer:
             empty_context_actual_logprobs=empty_logs,
             raw_token_lifts=raw_lifts,
             raw_token_copies=raw_copies,
+            raw_token_hint_only_vs_empty=raw_hint_only_vs_empty,
             token_lifts=lifts,
             token_copies=copies,
             token_dose_kls=dose_kls,

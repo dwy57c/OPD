@@ -155,7 +155,9 @@ class NaturalDecisionCollector:
             with ThreadPoolExecutor(max_workers=score_workers) as executor:
                 scored = list(
                     executor.map(
-                        lambda index: self.labeler.score_decision(trunk, index),
+                        lambda index: self.labeler.score_decision(
+                            trunk, index, seed=trajectory_seed
+                        ),
                         message_indexes,
                     )
                 )
@@ -165,7 +167,9 @@ class NaturalDecisionCollector:
             for message_index in message_indexes:
                 decisions.append(
                     self._materialize_target(
-                        self.labeler.score_decision(trunk, message_index)
+                        self.labeler.score_decision(
+                            trunk, message_index, seed=trajectory_seed
+                        )
                     )
                 )
                 if self.max_decisions and len(decisions) >= self.max_decisions:

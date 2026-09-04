@@ -111,6 +111,7 @@ def test_usefulness_uses_four_teacher_forced_views_on_same_tau_star():
     assert result.hinted_log_probability == pytest.approx(-2.0)
     assert result.mean_lift == pytest.approx(2.0)
     assert result.mean_copy == pytest.approx(0.0)
+    assert result.mean_hint_only_vs_empty == pytest.approx(0.0)
     assert result.probability_trace.token_lifts == pytest.approx((2.0, 2.0))
 
 
@@ -131,15 +132,18 @@ def test_copy_answer_hint_is_positive_but_clean_l2_is_near_zero():
     assert procedural.mean_copy == pytest.approx(0.0)
 
 
-def test_copy_does_not_charge_context_removal_prior():
-    prior_only, _ = scorer((-0.5, -0.5), empty_logs=(-0.5, -0.5))
+def test_empty_context_gain_is_diagnostic_not_the_copy_baseline():
+    prior_only, _ = scorer((-3.0, -3.0), empty_logs=(-5.0, -5.0))
     result = prior_only.score(
         student_visible_messages=messages(),
         hint="Observe before acting.",
         state_hash="prior",
     )
-    assert result.hint_only_log_probability > result.unhinted_log_probability
     assert result.mean_copy == pytest.approx(0.0)
+    assert result.mean_hint_only_vs_empty == pytest.approx(2.0)
+    assert result.probability_trace.raw_token_hint_only_vs_empty == pytest.approx(
+        (2.0, 2.0)
+    )
 
 
 def test_session_reward_equal_weights_decision_turns():

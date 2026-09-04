@@ -30,16 +30,17 @@ class TeacherActionGenerator:
     ):
         self.environment = environment
         self.action_provider = action_provider
-        self._task_hint = None
-        self._task_hint_ready = False
+        self._task_hints = {}
+        self._task_hint_ready = set()
         self._task_hint_lock = Lock()
 
     def task_hint(self, seed: int, history=None):
-        """Generate one hint at the first decision state and reuse it."""
+        """Generate one hint at a session's first decision state and reuse it."""
 
         with self._task_hint_lock:
-            if self._task_hint_ready:
-                return self._task_hint
+            session_key = int(seed)
+            if session_key in self._task_hint_ready:
+                return self._task_hints.get(session_key)
             public_history = (
                 list(history)
                 if history is not None
@@ -50,11 +51,11 @@ class TeacherActionGenerator:
             )
             agent = orchestrator.agent
             if hasattr(agent, "plan_for_session"):
-                self._task_hint = agent.plan_for_session(
+                self._task_hints[session_key] = agent.plan_for_session(
                     public_history
                 )
-            self._task_hint_ready = True
-            return self._task_hint
+            self._task_hint_ready.add(session_key)
+            return self._task_hints.get(session_key)
 
     def generate(self, decision: DecisionState, seed: int) -> TeacherActionResult:
         if self.action_provider is not None:

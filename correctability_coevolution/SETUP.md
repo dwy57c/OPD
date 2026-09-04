@@ -143,14 +143,17 @@ The reward uses four parallel teacher-forced calls to the same frozen Student:
 
 ```text
 lift_t = clip(log q(a*_t | s,h) - log p(a*_t | s), -c, c)
-copy_t = clip(max(log p(a*_t | h) - log p(a*_t | empty), 0), 0, c)
+copy_t = clip(max(log p(a*_t | h) - log p(a*_t | s), 0), 0, c)
+raw_hint_prior_t = log p(a*_t | h) - log p(a*_t | empty)  # diagnostic only
 dose   = max(mean_t KL(q_h || p) - bandwidth, 0)
 R      = mean(lift) - lambda mean(copy) - nu dose - mu tokens(h)
 ```
 
-The empty view contains the ordinary system prompt but no hint or dialogue.
-Therefore copy isolates the hint's effect instead of charging a no-state model
-prior. `mean_copy` is clipped nats per target token, not an 0–1 probability.
+The public-state baseline prevents a clean procedure from being charged merely
+for referring to the task. The empty view contains the ordinary system prompt
+but no hint or dialogue; its signed difference is retained in the raw trace for
+diagnosis and never enters the reward. `mean_copy` is clipped nats per target
+token, not an 0–1 probability.
 E1 then averages turn scores within each session and gives sessions equal
 weight. GRPO applies one candidate task hint to every standard decision turn
 and returns the same session-average reward for that hint.

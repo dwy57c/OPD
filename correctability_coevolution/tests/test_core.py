@@ -55,7 +55,8 @@ def test_unlimited_collector_materializes_every_natural_teacher_target():
 
     class Labeler:
         @staticmethod
-        def score_decision(trajectory, message_index):
+        def score_decision(trajectory, message_index, *, seed=None):
+            assert seed == 42
             action = trajectory[message_index]
             return {
                 "message_index": message_index,
