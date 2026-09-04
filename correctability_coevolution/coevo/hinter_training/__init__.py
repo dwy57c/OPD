@@ -10,6 +10,7 @@ from .grpo_reward import (
     HinterRewardBreakdown,
     HinterRewardConfig,
     TeacherForcedProbabilityTrace,
+    TeacherForcedReferencePoolUsefulness,
     TeacherForcedSessionUsefulness,
     TeacherForcedUsefulness,
     TeacherForcedUsefulnessScorer,
@@ -17,7 +18,11 @@ from .grpo_reward import (
     score_hinter_hint,
     validate_hinter_reward_row,
 )
-from .reward_dataset import HinterGRPORow, build_hinter_grpo_dataset
+from .reward_dataset import (
+    HinterGRPORow,
+    HinterReferenceTrajectory,
+    build_hinter_grpo_dataset,
+)
 
 __all__ = [
     "AcceptanceRule",
@@ -26,10 +31,12 @@ __all__ = [
     "ColdStartSource",
     "HinterCompositeReward",
     "HinterGRPORow",
+    "HinterReferenceTrajectory",
     "HinterRewardBreakdown",
     "HinterRewardConfig",
     "PassKSnapshot",
     "TeacherForcedProbabilityTrace",
+    "TeacherForcedReferencePoolUsefulness",
     "TeacherForcedSessionUsefulness",
     "TeacherForcedUsefulness",
     "TeacherForcedUsefulnessScorer",

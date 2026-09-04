@@ -48,12 +48,12 @@ python scripts/audit_hint_ladder.py \
   --output-dir artifacts/e1_hint_audit
 ```
 
-The audit runs the same four teacher-forced views used by GRPO and reports
+The audit runs the same three teacher-forced views used by GRPO and reports
 mean lift, mean analytical copy, and copy/transferable fractions. It records the
 coarse dose value only as an internal penalty diagnostic, not a paper metric.
 `recommended_copying_weight_from_l3` sets lambda from the observed L3 anchor.
-`analytical_scoring_panel` reports how many states were skipped because no L3
-standard action survived the strict contract and continuation validation.
+`analytical_scoring_panel` reports how many sessions were skipped because the
+requested oracle/validated-student reference pool was empty.
 Provide one environment-valid alternative answer for the same `state_id` and
 `task_id`, marked `plausible_alternative=true`. Regenerate the open hinter under
 the original and changed facts, then render the two E1 figures:
@@ -129,31 +129,34 @@ python scripts/build_hinter_cold_start_dataset.py \
   --output artifacts/hinter_cold_start.jsonl
 ```
 
-## E4: four-view GRPO and alternation
+## E4: three-view GRPO and alternation
 
-Build one GRPO row per audited task session. Each row contains every eligible
-L3 standard action in that session, while the hinter emits only one task hint:
+Build one GRPO row per audited task session. By default, each row uses the
+evaluator-authored oracle action sequence rather than an L3 Teacher rollout;
+the hinter still emits only one task hint:
 
 ```bash
 python scripts/build_hinter_grpo_dataset.py \
   artifacts/e1_hint_audit/audit_rows.jsonl artifacts/hinter_grpo.jsonl
 ```
 
-The reward uses four parallel teacher-forced calls to the same frozen Student:
+Use `--standard-source-level oracle+validated_student` to add successful
+Student trajectories that passed environment evaluation. When several
+reference trajectories are present, useful lift is evaluated on every one and
+the highest-lift reference supplies the reward terms.
+
+The reward uses three parallel teacher-forced calls to the same frozen Student:
 
 ```text
 lift_t = clip(log q(a*_t | s,h) - log p(a*_t | s), -c, c)
 copy_t = clip(max(log p(a*_t | h) - log p(a*_t | s), 0), 0, c)
-raw_hint_prior_t = log p(a*_t | h) - log p(a*_t | empty)  # diagnostic only
 dose   = max(mean_t KL(q_h || p) - bandwidth, 0)
 R      = mean(lift) - lambda mean(copy) - nu dose - mu tokens(h)
 ```
 
 The public-state baseline prevents a clean procedure from being charged merely
-for referring to the task. The empty view contains the ordinary system prompt
-but no hint or dialogue; its signed difference is retained in the raw trace for
-diagnosis and never enters the reward. `mean_copy` is clipped nats per target
-token, not an 0–1 probability.
+for referring to the task. `mean_copy` is clipped nats per target token, not an
+0–1 probability.
 E1 then averages turn scores within each session and gives sessions equal
 weight. GRPO applies one candidate task hint to every standard decision turn
 and returns the same session-average reward for that hint.

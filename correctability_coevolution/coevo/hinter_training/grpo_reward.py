@@ -21,7 +21,7 @@ from coevo.scoring.stage_gap import SparseTargetView, TeacherTargetBuilder
 
 @dataclass(frozen=True)
 class HinterRewardConfig:
-    """Weights for the four-view analytical hinter objective."""
+    """Weights for the three-view analytical hinter objective."""
 
     copying_weight: float = 1.0
     dose_weight: float = 1.0
@@ -68,10 +68,8 @@ class TeacherForcedProbabilityTrace:
     unhinted_actual_logprobs: tuple[float, ...]
     hinted_actual_logprobs: tuple[float, ...]
     hint_only_actual_logprobs: tuple[float, ...]
-    empty_context_actual_logprobs: tuple[float, ...]
     raw_token_lifts: tuple[float, ...]
     raw_token_copies: tuple[float, ...]
-    raw_token_hint_only_vs_empty: tuple[float, ...]
     token_lifts: tuple[float, ...]
     token_copies: tuple[float, ...]
     token_dose_kls: tuple[float, ...]
@@ -98,24 +96,8 @@ class TeacherForcedProbabilityTrace:
             hint_only_actual_logprobs=tuple(
                 float(item) for item in value["hint_only_actual_logprobs"]
             ),
-            empty_context_actual_logprobs=tuple(
-                float(item) for item in value["empty_context_actual_logprobs"]
-            ),
             raw_token_lifts=tuple(float(item) for item in value["raw_token_lifts"]),
             raw_token_copies=tuple(float(item) for item in value["raw_token_copies"]),
-            raw_token_hint_only_vs_empty=tuple(
-                float(item)
-                for item in value.get(
-                    "raw_token_hint_only_vs_empty",
-                    (
-                        float(hint_log) - float(empty_log)
-                        for hint_log, empty_log in zip(
-                            value["hint_only_actual_logprobs"],
-                            value["empty_context_actual_logprobs"],
-                        )
-                    ),
-                )
-            ),
             token_lifts=tuple(float(item) for item in value["token_lifts"]),
             token_copies=tuple(float(item) for item in value["token_copies"]),
             token_dose_kls=tuple(float(item) for item in value["token_dose_kls"]),
@@ -129,7 +111,6 @@ class TeacherForcedUsefulness:
     unhinted_log_probability: float
     hinted_log_probability: float
     hint_only_log_probability: float
-    empty_context_log_probability: float
     mean_lift: float
     mean_copy: float
     mean_dose_kl: float
@@ -143,11 +124,6 @@ class TeacherForcedUsefulness:
     @property
     def per_token_gain(self) -> float:
         return self.mean_lift
-
-    @property
-    def mean_hint_only_vs_empty(self) -> float:
-        values = self.probability_trace.raw_token_hint_only_vs_empty
-        return sum(values) / len(values)
 
     @property
     def transferable_mass(self) -> float:
@@ -181,11 +157,9 @@ class TeacherForcedUsefulness:
             "unhinted_log_probability": self.unhinted_log_probability,
             "hinted_log_probability": self.hinted_log_probability,
             "hint_only_log_probability": self.hint_only_log_probability,
-            "empty_context_log_probability": self.empty_context_log_probability,
             "log_probability_gain": self.log_probability_gain,
             "mean_lift": self.mean_lift,
             "mean_copy": self.mean_copy,
-            "mean_hint_only_vs_empty": self.mean_hint_only_vs_empty,
             "mean_dose_kl": self.mean_dose_kl,
             "copy_fraction": self.copy_fraction,
             "transferable_fraction": self.transferable_fraction,
@@ -211,12 +185,6 @@ class TeacherForcedSessionUsefulness:
         return sum(turn.mean_copy for turn in self.turns) / len(self.turns)
 
     @property
-    def mean_hint_only_vs_empty(self) -> float:
-        return sum(turn.mean_hint_only_vs_empty for turn in self.turns) / len(
-            self.turns
-        )
-
-    @property
     def mean_dose_kl(self) -> float:
         return sum(turn.mean_dose_kl for turn in self.turns) / len(self.turns)
 
@@ -226,9 +194,55 @@ class TeacherForcedSessionUsefulness:
             "target_tokens": sum(turn.target_token_count for turn in self.turns),
             "mean_lift": self.mean_lift,
             "mean_copy": self.mean_copy,
-            "mean_hint_only_vs_empty": self.mean_hint_only_vs_empty,
             "mean_dose_kl": self.mean_dose_kl,
             "per_turn": [turn.to_dict() for turn in self.turns],
+        }
+
+
+@dataclass(frozen=True)
+class TeacherForcedReferencePoolUsefulness:
+    references: tuple[TeacherForcedSessionUsefulness, ...]
+    sources: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not self.references or len(self.references) != len(self.sources):
+            raise ValueError("reference scores and sources must be non-empty and align")
+
+    @property
+    def selected_index(self) -> int:
+        return max(
+            range(len(self.references)),
+            key=lambda index: self.references[index].mean_lift,
+        )
+
+    @property
+    def selected(self) -> TeacherForcedSessionUsefulness:
+        return self.references[self.selected_index]
+
+    @property
+    def mean_lift(self) -> float:
+        return self.selected.mean_lift
+
+    @property
+    def mean_copy(self) -> float:
+        return self.selected.mean_copy
+
+    @property
+    def mean_dose_kl(self) -> float:
+        return self.selected.mean_dose_kl
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "reference_count": len(self.references),
+            "selected_index": self.selected_index,
+            "selected_source": self.sources[self.selected_index],
+            "mean_lift": self.mean_lift,
+            "mean_copy": self.mean_copy,
+            "mean_dose_kl": self.mean_dose_kl,
+            "references": [
+                {"source": source, **signals.to_dict()}
+                for source, signals in zip(self.sources, self.references)
+            ],
         }
 
 
@@ -375,7 +389,7 @@ def _clip(value: float, limit: float) -> float:
 
 
 class TeacherForcedUsefulnessScorer:
-    """Score tau* under state, state+hint, hint-only, and empty views."""
+    """Score tau* under state, state+hint, and hint-only views."""
 
     def __init__(
         self,
@@ -422,10 +436,6 @@ class TeacherForcedUsefulnessScorer:
             {**deepcopy(messages[0]), "content": hinted_system},
             deepcopy(messages[-1]),
         ]
-        empty_context_messages = [
-            deepcopy(messages[0]),
-            deepcopy(messages[-1]),
-        ]
         common = {
             "endpoint": self.config.policy,
             "checkpoint_id": checkpoint,
@@ -449,13 +459,8 @@ class TeacherForcedUsefulnessScorer:
                 "information_view": f"hinter_reward_hint_only:{hint_hash}",
                 "messages": hint_only_messages,
             },
-            "empty_context": {
-                **common,
-                "information_view": "hinter_reward_empty_context",
-                "messages": empty_context_messages,
-            },
         }
-        with ThreadPoolExecutor(max_workers=4) as executor:
+        with ThreadPoolExecutor(max_workers=3) as executor:
             futures = {
                 name: executor.submit(self.target_builder.score_view, **arguments)
                 for name, arguments in requests.items()
@@ -465,29 +470,22 @@ class TeacherForcedUsefulnessScorer:
         unhinted = views["unhinted"]
         hinted = views["hinted"]
         hint_only = views["hint_only"]
-        empty_context = views["empty_context"]
         if not (
             hinted.target_input_ids
             == unhinted.target_input_ids
             == hint_only.target_input_ids
-            == empty_context.target_input_ids
         ):
-            raise ValueError("all four standard-trajectory tokenizations must align")
+            raise ValueError("all three standard-trajectory tokenizations must align")
 
         p_logs = _actual_logprobs(unhinted)
         q_logs = _actual_logprobs(hinted)
         h_logs = _actual_logprobs(hint_only)
-        empty_logs = _actual_logprobs(empty_context)
         raw_lifts = tuple(
             q_value - p_value for q_value, p_value in zip(q_logs, p_logs)
         )
         raw_copies = tuple(
             max(0.0, h_value - p_value)
             for h_value, p_value in zip(h_logs, p_logs)
-        )
-        raw_hint_only_vs_empty = tuple(
-            h_value - empty_value
-            for h_value, empty_value in zip(h_logs, empty_logs)
         )
         lifts = tuple(_clip(value, self.token_clip) for value in raw_lifts)
         copies = tuple(_clip(value, self.token_clip) for value in raw_copies)
@@ -500,10 +498,8 @@ class TeacherForcedUsefulnessScorer:
             unhinted_actual_logprobs=p_logs,
             hinted_actual_logprobs=q_logs,
             hint_only_actual_logprobs=h_logs,
-            empty_context_actual_logprobs=empty_logs,
             raw_token_lifts=raw_lifts,
             raw_token_copies=raw_copies,
-            raw_token_hint_only_vs_empty=raw_hint_only_vs_empty,
             token_lifts=lifts,
             token_copies=copies,
             token_dose_kls=dose_kls,
@@ -512,7 +508,6 @@ class TeacherForcedUsefulnessScorer:
             unhinted_log_probability=sum(p_logs),
             hinted_log_probability=sum(q_logs),
             hint_only_log_probability=sum(h_logs),
-            empty_context_log_probability=sum(empty_logs),
             mean_lift=sum(lifts) / count,
             mean_copy=sum(copies) / count,
             mean_dose_kl=sum(dose_kls) / count,
@@ -541,23 +536,56 @@ class TeacherForcedUsefulnessScorer:
         )
         return TeacherForcedSessionUsefulness(turns)
 
+    def score_reference_pool(
+        self,
+        *,
+        reference_pool: Sequence[Mapping[str, Any]],
+        hint: str,
+        tool_schemas: Sequence[Mapping[str, Any]] | None = None,
+    ) -> TeacherForcedReferencePoolUsefulness:
+        references = []
+        sources = []
+        for reference in reference_pool:
+            session = reference.get("student_visible_session")
+            hashes = reference.get("state_hashes")
+            if not isinstance(session, Sequence) or not isinstance(hashes, Sequence):
+                raise ValueError("reference trajectory is missing session turns or hashes")
+            references.append(
+                self.score_session(
+                    student_visible_session=session,
+                    hint=hint,
+                    state_hashes=hashes,
+                    tool_schemas=tool_schemas,
+                )
+            )
+            sources.append(str(reference.get("source") or "reference"))
+        return TeacherForcedReferencePoolUsefulness(
+            references=tuple(references), sources=tuple(sources)
+        )
+
 
 def validate_hinter_reward_row(row: Mapping[str, Any]) -> None:
     required = (
         "state_hash",
         "public_state",
-        "student_visible_session",
-        "state_hashes",
+        "reference_pool",
     )
     missing = [field for field in required if field not in row]
     if missing:
         raise ValueError(f"hinter GRPO row is missing fields: {', '.join(missing)}")
-    session = row["student_visible_session"]
-    hashes = row["state_hashes"]
-    if not isinstance(session, list) or not session or len(session) != len(hashes):
-        raise ValueError("student_visible_session must align with state_hashes")
-    if any(not messages or messages[-1].get("role") != "assistant" for messages in session):
-        raise ValueError("every session turn must end in its standard action")
+    pool = row["reference_pool"]
+    if not isinstance(pool, list) or not pool:
+        raise ValueError("reference_pool must contain at least one trajectory")
+    for reference in pool:
+        session = reference.get("student_visible_session")
+        hashes = reference.get("state_hashes")
+        if not isinstance(session, list) or not session or len(session) != len(hashes):
+            raise ValueError("reference session must align with its state hashes")
+        if any(
+            not messages or messages[-1].get("role") != "assistant"
+            for messages in session
+        ):
+            raise ValueError("every reference turn must end in its standard action")
 
 
 class HinterCompositeReward(ORM):
@@ -599,6 +627,12 @@ class HinterCompositeReward(ORM):
         ) and len(value) == count:
             return value[index]
         if isinstance(value, list) and value:
+            if (
+                key == "reference_pool"
+                and isinstance(value[0], Mapping)
+                and "student_visible_session" in value[0]
+            ):
+                return value
             if key in {"public_state", "tools"} and isinstance(value[0], Mapping):
                 return value
             if key == "state_hashes" and isinstance(value[0], str):
@@ -634,16 +668,16 @@ class HinterCompositeReward(ORM):
                     "public_state",
                     "student_visible_session",
                     "state_hashes",
+                    "reference_pool",
                     "tools",
                     "privileged_context",
                     "fact_audit_context",
                 )
             }
             validate_hinter_reward_row(row)
-            signals = self.usefulness.score_session(
-                student_visible_session=row["student_visible_session"],
+            signals = self.usefulness.score_reference_pool(
+                reference_pool=row["reference_pool"],
                 hint=hint,
-                state_hashes=row["state_hashes"],
                 tool_schemas=row.get("tools") or [],
             )
             hint_tokens = len(

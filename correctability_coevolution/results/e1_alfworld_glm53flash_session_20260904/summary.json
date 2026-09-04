@@ -7,6 +7,7 @@
   "policy_model": "Qwen3-4B",
   "hint_scope": "one hint per task, reused for every decision turn",
   "aggregation": "token mean -> equal turn mean -> equal session mean",
+  "reference_pool_source": "oracle",
   "task_hints": {
     "L1_POLICY": "Inspect each container before taking anything, and keep track of whatever you pick up. Act one step at a time, confirm the object's state matches the goal's requirement, and verify the destination before committing to the placement.",
     "L2_PROCEDURAL": "No mug has been observed yet, so inspect receptacles one at a time without assuming which holds it, beginning with plausible mug spots like the countertop, cabinets, and coffee machine area, and never take anything before viewing a receptacle's contents. Once a mug is located, take it and check whether it is already hot; if not, heat it in the microwave first. Then go to a cabinet, open it if closed, and confirm it is the intended destination. Guardrail: verify the mug is hot and in inventory before placing, and recheck the cabinet afterward.",
@@ -34,7 +35,6 @@
       "session_mean_clipped_lift_nats_per_token": 0.08653554457429827,
       "session_mean_raw_copy_nats_per_token": 1.07801240912888,
       "session_mean_clipped_copy_nats_per_token": 0.5954970955647394,
-      "session_mean_hint_only_vs_empty_nats_per_token": -0.8823147336678034,
       "fact_finding_turn_rate": 0.0,
       "behavior": {
         "first_navigation_target": "cabinet 1",
@@ -54,7 +54,6 @@
       "session_mean_clipped_lift_nats_per_token": -0.5961156368827903,
       "session_mean_raw_copy_nats_per_token": 0.3627916835944849,
       "session_mean_clipped_copy_nats_per_token": 0.18343397918000331,
-      "session_mean_hint_only_vs_empty_nats_per_token": -4.924464024234921,
       "fact_finding_turn_rate": 1.0,
       "behavior": {
         "first_navigation_target": "countertop 1",
@@ -74,7 +73,6 @@
       "session_mean_clipped_lift_nats_per_token": -1.0374997085279358,
       "session_mean_raw_copy_nats_per_token": 0.4447093176037656,
       "session_mean_clipped_copy_nats_per_token": 0.23329939270647104,
-      "session_mean_hint_only_vs_empty_nats_per_token": -3.444694378894217,
       "fact_finding_turn_rate": 1.0,
       "behavior": {
         "first_navigation_target": "countertop 1",

@@ -12,6 +12,7 @@ from coevo.models.hinted_teacher import (
     TeacherHintResult,
     _validate_natural_note,
     format_teacher_system_prompt_with_hint,
+    oracle_assistant_actions_from_task,
 )
 from types import SimpleNamespace
 from coevo.hinter_prompt import build_hinter_messages, narrow_privileged_context
@@ -32,6 +33,18 @@ class FakeHinter:
             latency_ms=12,
             sha256="abc123",
         )
+
+
+def test_oracle_reference_actions_are_evaluator_authored_tool_calls():
+    task = get_tasks("airline", task_split_name="train", task_ids=["1"])[0]
+
+    actions = oracle_assistant_actions_from_task(task)
+
+    assert [action.tool_calls[0].name for action in actions] == [
+        "get_user_details",
+        "get_reservation_details",
+    ]
+    assert actions[0].tool_calls[0].arguments["user_id"] == "raj_sanchez_7340"
 
 
 def test_infra_has_one_policy_endpoint_for_student_and_teacher():

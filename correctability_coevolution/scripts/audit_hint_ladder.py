@@ -25,12 +25,16 @@ from coevo.hinter_prompt import (
 )
 from coevo.hinter_training import (
     TeacherForcedUsefulnessScorer,
+    build_hinter_grpo_dataset,
     calibrate_copying_weight,
 )
+from coevo.hinter_training.reward_dataset import REFERENCE_POOL_SOURCES
 from coevo.intervention import DecisionState, TeacherActionGenerator
-from coevo.models.hinted_teacher import oracle_steps_from_task
+from coevo.models.hinted_teacher import (
+    oracle_assistant_actions_from_task,
+    oracle_steps_from_task,
+)
 from coevo.rollout import student_view
-from coevo.scoring import TeacherTargetValidator
 
 
 def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -80,13 +84,6 @@ def summarize_level_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 / len(scored),
             }
         )
-        diagnostic = [
-            row["mean_hint_only_vs_empty"]
-            for row in scored
-            if "mean_hint_only_vs_empty" in row
-        ]
-        if diagnostic:
-            result["mean_hint_only_vs_empty"] = sum(diagnostic) / len(diagnostic)
     result["session_analytical"] = aggregate_session_signals(valid)
     return result
 
@@ -97,6 +94,13 @@ def _states_from_trajectories(path: Path) -> list[dict[str, Any]]:
         if not line.strip():
             continue
         record = json.loads(line)
+        reward_info = record.get("reward_info")
+        reward = (
+            reward_info.get("reward")
+            if isinstance(reward_info, dict)
+            else record.get("student_trajectory_score")
+        )
+        verified = isinstance(reward, (int, float)) and float(reward) >= 1.0
         for decision in record.get("student_decisions", []):
             states.append(
                 {
@@ -107,12 +111,19 @@ def _states_from_trajectories(path: Path) -> list[dict[str, Any]]:
                     "session_id": f"{record['task_id']}:{record.get('seed', 42)}",
                     "history_before": decision["history_before"],
                     "student_action": decision["student_action"],
+                    "student_trajectory_score": reward,
+                    "student_trajectory_verified": verified,
                 }
             )
     return states
 
 
-def _collect_states(config: InfraConfig, task_ids: list[str]) -> list[dict[str, Any]]:
+def _collect_states(
+    config: InfraConfig,
+    task_ids: list[str],
+    *,
+    evaluate_student: bool = False,
+) -> list[dict[str, Any]]:
     states = []
     for task_id in task_ids:
         task_config = replace(
@@ -123,6 +134,9 @@ def _collect_states(config: InfraConfig, task_ids: list[str]) -> list[dict[str, 
             environment.initial_history(), "student", seed=config.seed
         )
         simulation = orchestrator.run()
+        reward = None
+        if evaluate_student:
+            reward = float(environment.evaluate(simulation).reward)
         history = simulation.get_messages()
         initial_size = len(environment.initial_history())
         for index in range(initial_size, len(history)):
@@ -138,6 +152,10 @@ def _collect_states(config: InfraConfig, task_ids: list[str]) -> list[dict[str, 
                     "session_id": f"{task_id}:{config.seed}",
                     "history_before": dump_messages(list(decision.history_before)),
                     "student_action": decision.student_action.model_dump(mode="json"),
+                    "student_trajectory_score": reward,
+                    "student_trajectory_verified": (
+                        reward is not None and reward >= 1.0
+                    ),
                 }
             )
     return states
@@ -167,19 +185,17 @@ def main() -> None:
         "--score-transfer",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Run the four teacher-forced E1 copy/transfer decomposition.",
+        help="Run the three-view teacher-forced E1 copy/transfer decomposition.",
     )
     parser.add_argument(
-        "--validate-standard-actions",
-        action=argparse.BooleanOptionalAction,
-        default=True,
+        "--standard-source-level",
+        choices=REFERENCE_POOL_SOURCES,
+        default="oracle",
+        help="Reference-pool source; retained under the old flag name for compatibility.",
     )
-    parser.add_argument("--standard-quality-threshold", type=float, default=1.0)
     args = parser.parse_args()
     if bool(args.from_trajectories) == bool(args.task_ids):
         parser.error("provide exactly one of --from-trajectories or --task-ids")
-    if not 0 <= args.standard_quality_threshold <= 1:
-        parser.error("--standard-quality-threshold must be in [0, 1]")
 
     config = InfraConfig.from_env()
     profile_manifest = json.loads(
@@ -189,7 +205,11 @@ def main() -> None:
     states = (
         _states_from_trajectories(args.from_trajectories)
         if args.from_trajectories
-        else _collect_states(config, [str(value) for value in args.task_ids])
+        else _collect_states(
+            config,
+            [str(value) for value in args.task_ids],
+            evaluate_student=(args.standard_source_level != "oracle"),
+        )
     )
     if args.max_states:
         states = states[: args.max_states]
@@ -237,7 +257,7 @@ def main() -> None:
             tools = [
                 tool.openai_schema for tool in (getattr(student, "tools", None) or [])
             ]
-            generator_key = (state["task_id"], level.value)
+            generator_key = (state["session_id"], level.value)
             generator = teacher_generators.setdefault(
                 generator_key, TeacherActionGenerator(environment)
             )
@@ -252,26 +272,6 @@ def main() -> None:
                 if isinstance(result.hint, dict)
                 else None
             )
-            standard_validation = None
-            standard_eligible = False
-            if (
-                not hint_error
-                and level is HintLevel.L3_ORACLE
-                and args.validate_standard_actions
-            ):
-                fixed_generator = TeacherActionGenerator(
-                    environment,
-                    action_provider=lambda _decision, _seed, value=result: value,
-                )
-                validation = TeacherTargetValidator(
-                    environment,
-                    continuations=environment.config.teacher_validation_continuations,
-                    teacher_generator=fixed_generator,
-                ).run(decision)
-                standard_validation = validation.to_dict()
-                standard_eligible = (
-                    validation.teacher_quality >= args.standard_quality_threshold
-                )
             public_privilege = {
                 "domain_policy": student.domain_policy,
                 "authoritative_oracle_steps": oracle_steps_from_task(environment.task),
@@ -301,6 +301,15 @@ def main() -> None:
                 "hint_error": hint_error,
                 "hint_words": len(hint_note.split()),
                 "teacher_action": result.action.model_dump(mode="json"),
+                "student_action": state["student_action"],
+                "student_trajectory_score": state.get("student_trajectory_score"),
+                "student_trajectory_verified": bool(
+                    state.get("student_trajectory_verified")
+                ),
+                "oracle_reference_actions": [
+                    action.model_dump(mode="json")
+                    for action in oracle_assistant_actions_from_task(environment.task)
+                ],
                 "public_state": state["history_before"],
                 "task_public_state": task_public_states[state["session_id"]],
                 "student_profile": student_profile_from_decision(
@@ -310,8 +319,6 @@ def main() -> None:
                 "fact_audit_context": fact_audit_context,
                 "student_visible_messages": student_messages,
                 "tools": tools,
-                "standard_action_eligible": standard_eligible,
-                "standard_validation": standard_validation,
                 "behavior": behavior.to_dict(),
                 "analytical_signals": None,
             }
@@ -329,71 +336,60 @@ def main() -> None:
                     }
                 )
 
+    reference_rows = []
     if transfer_scorer is not None:
-        state_ids = {str(row["state_id"]) for row in rows}
-        for state_id in state_ids:
-            state_rows = [row for row in rows if str(row["state_id"]) == state_id]
-            standards = [
-                row
-                for row in state_rows
-                if row["hint_level"] == HintLevel.L3_ORACLE.value
-                and not row.get("hint_error")
-                and (
-                    row.get("standard_action_eligible")
-                    or not args.validate_standard_actions
-                )
+        reference_rows = build_hinter_grpo_dataset(
+            rows,
+            standard_source_level=args.standard_source_level,
+            skip_missing_references=True,
+        )
+        for reference_row in reference_rows:
+            serialized = reference_row.to_dict()
+            session_rows = [
+                row for row in rows if row["session_id"] == reference_row.session_id
             ]
-            if len(standards) != 1:
-                continue
-            standard = standards[0]
-            for row in state_rows:
-                hint = row.get("hint") or {}
-                hint_note = str((hint.get("hint") or {}).get("plan") or "")
-                if not hint_note or row.get("hint_error"):
+            for level in levels:
+                candidates = [
+                    row
+                    for row in session_rows
+                    if row["hint_level"] == level.value and not row.get("hint_error")
+                ]
+                if not candidates:
                     continue
-                row["analytical_signals"] = transfer_scorer.score(
-                    student_visible_messages=standard["student_visible_messages"],
-                    hint=hint_note,
-                    state_hash=standard["state_hash"],
-                    tool_schemas=standard["tools"],
-                ).to_dict()
+                hint = candidates[0].get("hint") or {}
+                hint_note = str((hint.get("hint") or {}).get("plan") or "")
+                if not hint_note:
+                    continue
+                candidates[0]["analytical_signals"] = (
+                    transfer_scorer.score_reference_pool(
+                        reference_pool=serialized["reference_pool"],
+                        hint=hint_note,
+                        tool_schemas=serialized["tools"],
+                    ).to_dict()
+                )
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     _write_jsonl(args.output_dir / "audit_rows.jsonl", rows)
     _write_jsonl(args.output_dir / "probe_source_rows.jsonl", probe_sources)
-    skip_reasons = {
-        "missing_l3": 0,
-        "l3_hint_error": 0,
-        "l3_validation_rejected": 0,
-    }
-    eligible_l3_states = 0
-    for state_id in {str(row["state_id"]) for row in rows}:
-        l3_rows = [
-            row
-            for row in rows
-            if str(row["state_id"]) == state_id
-            and row["hint_level"] == HintLevel.L3_ORACLE.value
-        ]
-        if not l3_rows:
-            skip_reasons["missing_l3"] += 1
-        elif l3_rows[0].get("hint_error"):
-            skip_reasons["l3_hint_error"] += 1
-        elif args.validate_standard_actions and not l3_rows[0].get(
-            "standard_action_eligible"
-        ):
-            skip_reasons["l3_validation_rejected"] += 1
-        else:
-            eligible_l3_states += 1
+    session_count = len({str(row["session_id"]) for row in rows})
+    eligible_reference_sessions = len(reference_rows) if transfer_scorer else 0
     summary: dict[str, Any] = {
         "states": len(states),
         "levels": {},
         "analytical_scoring_panel": {
-            "eligible_l3_states": eligible_l3_states,
-            "skipped_states": len(states) - eligible_l3_states,
+            "reference_pool_source": args.standard_source_level,
+            "eligible_reference_sessions": eligible_reference_sessions,
+            "skipped_sessions": session_count - eligible_reference_sessions,
             "skip_rate": (
-                (len(states) - eligible_l3_states) / len(states) if states else 0.0
+                (session_count - eligible_reference_sessions) / session_count
+                if session_count
+                else 0.0
             ),
-            "skip_reasons": skip_reasons,
+            "skip_reasons": {
+                "missing_reference_trajectory": (
+                    session_count - eligible_reference_sessions
+                )
+            },
         },
         "student_profile_manifest": str(args.student_profile_manifest),
     }

@@ -28,7 +28,7 @@ def sparse(actual_logs):
     )
 
 
-def scorer(hint_only_logs, *, empty_logs=(-4.0, -4.0), clip=5.0):
+def scorer(hint_only_logs, *, clip=5.0):
     calls = []
 
     class Builder:
@@ -39,8 +39,6 @@ def scorer(hint_only_logs, *, empty_logs=(-4.0, -4.0), clip=5.0):
                 return sparse((-3.0, -3.0))
             if view.startswith("hinter_reward_hint_only"):
                 return sparse(hint_only_logs)
-            if view == "hinter_reward_empty_context":
-                return sparse(empty_logs)
             return sparse((-1.0, -1.0))
 
     config = SimpleNamespace(
@@ -89,29 +87,24 @@ def test_reward_is_four_term_analytical_objective():
         )
 
 
-def test_usefulness_uses_four_teacher_forced_views_on_same_tau_star():
+def test_usefulness_uses_three_teacher_forced_views_on_same_tau_star():
     utility, calls = scorer((-4.0, -4.0))
     result = utility.score(
         student_visible_messages=messages(),
         hint="Ask for the missing lookup key.",
         state_hash="state",
     )
-    assert len(calls) == 4
+    assert len(calls) == 3
     assert all(call["checkpoint_id"] == "student-checkpoint" for call in calls)
     assert all(call["messages"][-1] == messages()[-1] for call in calls)
     hint_only = next(
         call for call in calls if call["information_view"].startswith("hinter_reward_hint_only")
     )
     assert [row["role"] for row in hint_only["messages"]] == ["system", "assistant"]
-    empty = next(
-        call for call in calls if call["information_view"] == "hinter_reward_empty_context"
-    )
-    assert [row["role"] for row in empty["messages"]] == ["system", "assistant"]
     assert result.unhinted_log_probability == pytest.approx(-6.0)
     assert result.hinted_log_probability == pytest.approx(-2.0)
     assert result.mean_lift == pytest.approx(2.0)
     assert result.mean_copy == pytest.approx(0.0)
-    assert result.mean_hint_only_vs_empty == pytest.approx(0.0)
     assert result.probability_trace.token_lifts == pytest.approx((2.0, 2.0))
 
 
@@ -130,20 +123,6 @@ def test_copy_answer_hint_is_positive_but_clean_l2_is_near_zero():
     )
     assert copied.mean_copy > 2.0
     assert procedural.mean_copy == pytest.approx(0.0)
-
-
-def test_empty_context_gain_is_diagnostic_not_the_copy_baseline():
-    prior_only, _ = scorer((-3.0, -3.0), empty_logs=(-5.0, -5.0))
-    result = prior_only.score(
-        student_visible_messages=messages(),
-        hint="Observe before acting.",
-        state_hash="prior",
-    )
-    assert result.mean_copy == pytest.approx(0.0)
-    assert result.mean_hint_only_vs_empty == pytest.approx(2.0)
-    assert result.probability_trace.raw_token_hint_only_vs_empty == pytest.approx(
-        (2.0, 2.0)
-    )
 
 
 def test_session_reward_equal_weights_decision_turns():
@@ -215,7 +194,9 @@ def test_reward_callback_has_no_rollout_or_discriminator_dependency():
         def to_dict():
             return {"mean_lift": 2.0, "mean_copy": 0.5, "mean_dose_kl": 0.3}
 
-    reward.usefulness = SimpleNamespace(score_session=lambda **_kwargs: Signals())
+    reward.usefulness = SimpleNamespace(
+        score_reference_pool=lambda **_kwargs: Signals()
+    )
     reward.hinter_tokenizer = SimpleNamespace(
         encode=lambda hint, add_special_tokens=False: hint.split()
     )
@@ -231,6 +212,22 @@ def test_reward_callback_has_no_rollout_or_discriminator_dependency():
         public_state=[[{"role": "user", "content": "x"}]] * 2,
         student_visible_session=[[visible], [visible]],
         state_hashes=[["turn-s"], ["turn-s"]],
+        reference_pool=[
+            [
+                {
+                    "source": "oracle",
+                    "student_visible_session": [visible],
+                    "state_hashes": ["turn-s"],
+                }
+            ],
+            [
+                {
+                    "source": "oracle",
+                    "student_visible_session": [visible],
+                    "state_hashes": ["turn-s"],
+                }
+            ],
+        ],
         tools=[[], []],
         privileged_context=[
             {"authoritative_oracle_steps": "private"},
@@ -240,7 +237,7 @@ def test_reward_callback_has_no_rollout_or_discriminator_dependency():
     assert values == pytest.approx([1.1, 1.1])
 
 
-def test_grpo_dataset_uses_one_hint_and_all_l3_turns_per_session():
+def test_grpo_dataset_uses_oracle_actions_instead_of_l3_teacher_actions():
     standard_messages = [
         {"role": "system", "content": "policy"},
         {"role": "user", "content": "help"},
@@ -260,7 +257,9 @@ def test_grpo_dataset_uses_one_hint_and_all_l3_turns_per_session():
             "authoritative_oracle_steps": "private",
         },
         "tools": [],
-        "standard_action_eligible": True,
+        "oracle_reference_actions": [
+            {"role": "assistant", "content": "oracle action"}
+        ],
     }
     rows = [
         {
@@ -279,10 +278,87 @@ def test_grpo_dataset_uses_one_hint_and_all_l3_turns_per_session():
     ]
     result = build_hinter_grpo_dataset(rows)
     assert len(result) == 1
-    assert result[0].student_visible_session[0][-1]["content"] == "verified standard"
+    assert result[0].student_visible_session[0][-1]["content"] == "oracle action"
     assert result[0].session_id == "task:42"
-    assert result[0].standard_source_level == "L3_ORACLE"
+    assert result[0].reference_pool_source == "oracle"
+    assert result[0].reference_pool[0].source == "oracle"
     assert result[0].scenario_id == "task"
+
+
+def test_reference_pool_selects_the_trajectory_with_maximum_lift():
+    utility = object.__new__(TeacherForcedUsefulnessScorer)
+    signals = {
+        "oracle": SimpleNamespace(mean_lift=0.2, mean_copy=0.1, mean_dose_kl=0.3),
+        "student": SimpleNamespace(mean_lift=0.8, mean_copy=0.4, mean_dose_kl=0.5),
+    }
+    utility.score_session = lambda state_hashes, **_kwargs: signals[state_hashes[0]]
+
+    result = utility.score_reference_pool(
+        reference_pool=[
+            {
+                "source": "oracle",
+                "student_visible_session": [messages()],
+                "state_hashes": ["oracle"],
+            },
+            {
+                "source": "validated_student",
+                "student_visible_session": [messages()],
+                "state_hashes": ["student"],
+            },
+        ],
+        hint="candidate",
+    )
+
+    assert result.mean_lift == pytest.approx(0.8)
+    assert result.mean_copy == pytest.approx(0.4)
+    assert result.sources[result.selected_index] == "validated_student"
+
+
+def test_grpo_reference_pool_can_add_verified_student_trajectories():
+    common = {
+        "task_id": "task",
+        "public_state": [{"role": "user", "content": "help"}],
+        "student_profile": {
+            "unhinted_success": 0.2,
+            "curriculum_band": "frontier",
+        },
+        "privileged_context": {
+            "domain_policy": "policy",
+            "authoritative_oracle_steps": "oracle",
+        },
+        "tools": [],
+        "oracle_reference_actions": [
+            {"role": "assistant", "content": "oracle action"}
+        ],
+    }
+    rows = [
+        {
+            **common,
+            "session_id": "task:1",
+            "state_hash": "state-1",
+            "student_visible_messages": messages(),
+            "student_action": {"role": "assistant", "content": "failed"},
+            "student_trajectory_verified": False,
+        },
+        {
+            **common,
+            "session_id": "task:2",
+            "state_hash": "state-2",
+            "student_visible_messages": messages(),
+            "student_action": {"role": "assistant", "content": "successful"},
+            "student_trajectory_verified": True,
+        },
+    ]
+
+    result = build_hinter_grpo_dataset(
+        rows, standard_source_level="oracle+validated_student"
+    )
+
+    assert len(result) == 2
+    assert [reference.source for reference in result[0].reference_pool] == [
+        "oracle",
+        "validated_student",
+    ]
 
 
 def test_active_token_budget_never_partially_includes_a_row():

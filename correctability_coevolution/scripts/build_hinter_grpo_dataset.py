@@ -4,19 +4,20 @@ import json
 from pathlib import Path
 
 from coevo.hinter_training import build_hinter_grpo_dataset
-from coevo.hints import HintLevel
+from coevo.hinter_training.reward_dataset import REFERENCE_POOL_SOURCES
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Build fixed-standard-action rows for hinter GRPO"
+        description="Build fixed oracle/reference-pool rows for hinter GRPO"
     )
     parser.add_argument("audit_rows", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument(
         "--standard-source-level",
-        choices=[level.value for level in HintLevel if level is not HintLevel.HINTER],
-        default=HintLevel.L3_ORACLE.value,
+        choices=REFERENCE_POOL_SOURCES,
+        default="oracle",
+        help="Reference-pool source; retained under the old flag name for CLI compatibility.",
     )
     args = parser.parse_args()
     rows = [

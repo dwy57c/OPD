@@ -16,6 +16,10 @@ def test_agentgym_eto_privilege_combines_expert_trace_and_hidden_state():
     assert payload["goal_object_locations"] == {"mug": "coffeemachine 1"}
     assert payload["destination_receptacle"] == "cabinet 4"
     assert "go to coffeemachine 1" in payload["authoritative_oracle_steps"]
+    assert result.oracle_reference_actions()[0] == {
+        "role": "assistant",
+        "content": "go to coffeemachine 1",
+    }
 
 
 def test_alfworld_behavior_audit_measures_direct_hit_and_query_before_pickup():

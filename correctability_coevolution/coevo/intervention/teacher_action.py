@@ -30,8 +30,8 @@ class TeacherActionGenerator:
     ):
         self.environment = environment
         self.action_provider = action_provider
-        self._task_hints = {}
-        self._task_hint_ready = set()
+        self._task_hints: dict[int, object | None] = {}
+        self._task_hint_ready: set[int] = set()
         self._task_hint_lock = Lock()
 
     def task_hint(self, seed: int, history=None):

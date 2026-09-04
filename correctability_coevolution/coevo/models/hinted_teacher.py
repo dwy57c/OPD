@@ -18,6 +18,7 @@ from tau2.data_model.message import (
     AssistantMessage,
     MultiToolMessage,
     SystemMessage,
+    ToolCall,
 )
 from tau2.data_model.tasks import Task
 
@@ -63,6 +64,28 @@ def oracle_steps_from_task(task: Task) -> str:
             action, include_function_args=True
         )
         for index, action in enumerate(actions or [], start=1)
+    )
+
+
+def oracle_assistant_actions_from_task(task: Task) -> tuple[AssistantMessage, ...]:
+    """Return evaluator-authored assistant tool actions as scoreable targets."""
+
+    criteria = task.evaluation_criteria
+    actions = criteria.actions if criteria is not None else None
+    return tuple(
+        AssistantMessage(
+            role="assistant",
+            tool_calls=[
+                ToolCall(
+                    id=action.action_id,
+                    name=action.name,
+                    arguments=action.arguments,
+                    requestor="assistant",
+                )
+            ],
+        )
+        for action in actions or []
+        if action.requestor == "assistant"
     )
 
 

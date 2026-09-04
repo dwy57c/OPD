@@ -47,6 +47,14 @@ class AlfworldPrivilege:
             "unobserved_states": dict(self.unobserved_states),
         }
 
+    def oracle_reference_actions(self) -> tuple[dict[str, str], ...]:
+        """Return the AgentGym/ETO expert commands as scoreable assistant actions."""
+
+        return tuple(
+            {"role": "assistant", "content": action}
+            for action in self.expert_actions
+        )
+
 
 def privilege_from_agentgym_eto_record(record: Mapping[str, Any]) -> AlfworldPrivilege:
     """Normalize AgentGym/ETO expert traces plus simulator hidden state."""

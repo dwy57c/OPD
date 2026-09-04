@@ -33,7 +33,7 @@ mixed capital-and-digit identifiers such as `ZX99AB`. For ALFWorld it checks
 the goal object's true receptacle, the destination instance, and unobserved
 states against both class and instance aliases.
 
-## 3. Four-view analytical reward
+## 3. Three-view analytical reward
 
 For a fixed current Student, public state `s`, candidate hint `h`, and fixed
 standard action trajectory `tau*`, score the same target tokens in parallel:
@@ -42,11 +42,9 @@ standard action trajectory `tau*`, score the same target tokens in parallel:
 p_t = p_theta(a*_t | s)
 q_t = p_theta(a*_t | s,h)
 r_t = p_theta(a*_t | h)       # system prompt + hint, no dialogue history
-e_t = p_theta(a*_t | empty)   # same system prompt, no hint or dialogue history
 
 lift_t = clip(log q_t - log p_t, -c, c)
 copy_t = clip(max(log r_t - log p_t, 0), 0, c)
-raw_hint_prior_t = log r_t - log e_t  # diagnostic only
 dose   = max(mean_t KL(q_t || p_t) - bandwidth, 0)
 
 R(h) = mean(lift_t) - lambda mean(copy_t) - nu dose - mu tokens(h)
@@ -54,15 +52,18 @@ R(h) = mean(lift_t) - lambda mean(copy_t) - nu dose - mu tokens(h)
 
 The state-conditioned subtraction asks whether the hint alone predicts the
 standard action better than the public state does. This avoids charging a clean
-procedural hint merely for mentioning the task. The empty-context view remains
-in the raw trace as `raw_hint_prior_t`; it is a diagnostic and never enters the
-reward. `mean_copy` is clipped nats per target token, not a probability or a
-fraction of copied tokens.
+procedural hint merely for mentioning the task. `mean_copy` is clipped nats per
+target token, not a probability or a fraction of copied tokens.
 
 E1 aggregates in two stages: token means form one decision-turn score, then
 turns are averaged within each session, and sessions receive equal weight.
 One task-level hint is reused at every decision in that session, so GRPO uses
 the same turn-then-session aggregation and returns one reward for that hint.
+`tau*` comes first from evaluator-authored oracle actions, never from an L3
+Teacher rollout. Environment-verified successful Student trajectories may be
+added as alternative references. The candidate hint is scored against every
+trajectory in this fixed pool, and the trajectory with maximum mean lift
+supplies lift, copy, and dose to the reward.
 
 The dose estimator is the coarse-grained forward KL on shared explicit sparse
 support plus a tail bucket, a stable lower bound that avoids top-k membership
