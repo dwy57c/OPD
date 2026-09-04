@@ -175,6 +175,37 @@ class TeacherForcedUsefulness:
 
 
 @dataclass(frozen=True)
+class TeacherForcedSessionUsefulness:
+    turns: tuple[TeacherForcedUsefulness, ...]
+
+    def __post_init__(self) -> None:
+        if not self.turns:
+            raise ValueError("session usefulness requires at least one decision turn")
+
+    @property
+    def mean_lift(self) -> float:
+        return sum(turn.mean_lift for turn in self.turns) / len(self.turns)
+
+    @property
+    def mean_copy(self) -> float:
+        return sum(turn.mean_copy for turn in self.turns) / len(self.turns)
+
+    @property
+    def mean_dose_kl(self) -> float:
+        return sum(turn.mean_dose_kl for turn in self.turns) / len(self.turns)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "turns": len(self.turns),
+            "target_tokens": sum(turn.target_token_count for turn in self.turns),
+            "mean_lift": self.mean_lift,
+            "mean_copy": self.mean_copy,
+            "mean_dose_kl": self.mean_dose_kl,
+            "per_turn": [turn.to_dict() for turn in self.turns],
+        }
+
+
+@dataclass(frozen=True)
 class HinterRewardBreakdown:
     mean_lift: float
     mean_copy: float
@@ -457,17 +488,44 @@ class TeacherForcedUsefulnessScorer:
             probability_trace=trace,
         )
 
+    def score_session(
+        self,
+        *,
+        student_visible_session: Sequence[Sequence[Mapping[str, Any]]],
+        hint: str,
+        state_hashes: Sequence[str],
+        tool_schemas: Sequence[Mapping[str, Any]] | None = None,
+    ) -> TeacherForcedSessionUsefulness:
+        if len(student_visible_session) != len(state_hashes):
+            raise ValueError("session turns and state hashes must align")
+        turns = tuple(
+            self.score(
+                student_visible_messages=messages,
+                hint=hint,
+                state_hash=str(state_hash),
+                tool_schemas=tool_schemas,
+            )
+            for messages, state_hash in zip(student_visible_session, state_hashes)
+        )
+        return TeacherForcedSessionUsefulness(turns)
+
 
 def validate_hinter_reward_row(row: Mapping[str, Any]) -> None:
-    required = ("state_hash", "public_state", "student_visible_messages")
+    required = (
+        "state_hash",
+        "public_state",
+        "student_visible_session",
+        "state_hashes",
+    )
     missing = [field for field in required if field not in row]
     if missing:
         raise ValueError(f"hinter GRPO row is missing fields: {', '.join(missing)}")
-    messages = row["student_visible_messages"]
-    if not isinstance(messages, list) or not messages:
-        raise ValueError("student_visible_messages must be a non-empty list")
-    if messages[-1].get("role") != "assistant":
-        raise ValueError("student_visible_messages must end in the standard action")
+    session = row["student_visible_session"]
+    hashes = row["state_hashes"]
+    if not isinstance(session, list) or not session or len(session) != len(hashes):
+        raise ValueError("student_visible_session must align with state_hashes")
+    if any(not messages or messages[-1].get("role") != "assistant" for messages in session):
+        raise ValueError("every session turn must end in its standard action")
 
 
 class HinterCompositeReward(ORM):
@@ -508,13 +566,18 @@ class HinterCompositeReward(ORM):
             value, list
         ) and len(value) == count:
             return value[index]
-        if (
-            key in {"public_state", "student_visible_messages", "tools"}
-            and isinstance(value, list)
-            and value
-            and isinstance(value[0], Mapping)
-        ):
-            return value
+        if isinstance(value, list) and value:
+            if key in {"public_state", "tools"} and isinstance(value[0], Mapping):
+                return value
+            if key == "state_hashes" and isinstance(value[0], str):
+                return value
+            if (
+                key == "student_visible_session"
+                and isinstance(value[0], list)
+                and value[0]
+                and isinstance(value[0][0], Mapping)
+            ):
+                return value
         if isinstance(value, list) and len(value) == count:
             return value[index]
         return value
@@ -537,17 +600,18 @@ class HinterCompositeReward(ORM):
                 for key in (
                     "state_hash",
                     "public_state",
-                    "student_visible_messages",
+                    "student_visible_session",
+                    "state_hashes",
                     "tools",
                     "privileged_context",
                     "fact_audit_context",
                 )
             }
             validate_hinter_reward_row(row)
-            signals = self.usefulness.score(
-                student_visible_messages=row["student_visible_messages"],
+            signals = self.usefulness.score_session(
+                student_visible_session=row["student_visible_session"],
                 hint=hint,
-                state_hash=str(row["state_hash"]),
+                state_hashes=row["state_hashes"],
                 tool_schemas=row.get("tools") or [],
             )
             hint_tokens = len(

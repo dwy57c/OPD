@@ -31,10 +31,10 @@ def parse_args():
     parser.add_argument(
         "--hint-refresh",
         choices=["session", "turn"],
-        default="turn",
+        default="session",
         help=(
             "Refresh the closed-model plan once per dialogue or before every "
-            "Agent turn. 'turn' matches decision-local collection semantics."
+            "Agent turn. 'session' is the active one-hint-per-task contract."
         ),
     )
     parser.add_argument(

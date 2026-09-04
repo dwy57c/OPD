@@ -1,5 +1,6 @@
 from copy import deepcopy
 from dataclasses import dataclass
+from threading import Lock
 from typing import Callable
 
 from tau2.data_model.message import AssistantMessage
@@ -29,6 +30,31 @@ class TeacherActionGenerator:
     ):
         self.environment = environment
         self.action_provider = action_provider
+        self._task_hint = None
+        self._task_hint_ready = False
+        self._task_hint_lock = Lock()
+
+    def task_hint(self, seed: int, history=None):
+        """Generate one hint at the first decision state and reuse it."""
+
+        with self._task_hint_lock:
+            if self._task_hint_ready:
+                return self._task_hint
+            public_history = (
+                list(history)
+                if history is not None
+                else self.environment.initial_history()
+            )
+            orchestrator = self.environment.orchestrator(
+                public_history, "teacher", seed=seed
+            )
+            agent = orchestrator.agent
+            if hasattr(agent, "plan_for_session"):
+                self._task_hint = agent.plan_for_session(
+                    public_history
+                )
+            self._task_hint_ready = True
+            return self._task_hint
 
     def generate(self, decision: DecisionState, seed: int) -> TeacherActionResult:
         if self.action_provider is not None:
@@ -37,7 +63,12 @@ class TeacherActionGenerator:
             return result
 
         history = list(decision.history_before)
-        orchestrator = self.environment.orchestrator(history, "teacher", seed=seed)
+        orchestrator = self.environment.orchestrator(
+            history,
+            "teacher",
+            seed=seed,
+            teacher_hint=self.task_hint(seed, decision.history_before),
+        )
         orchestrator.initialize()
         initial_size = len(orchestrator.get_trajectory())
         while not orchestrator.done:

@@ -131,7 +131,8 @@ python scripts/build_hinter_cold_start_dataset.py \
 
 ## E4: four-view GRPO and alternation
 
-Build one fixed standard trajectory per audited state:
+Build one GRPO row per audited task session. Each row contains every eligible
+L3 standard action in that session, while the hinter emits only one task hint:
 
 ```bash
 python scripts/build_hinter_grpo_dataset.py \
@@ -151,7 +152,8 @@ The empty view contains the ordinary system prompt but no hint or dialogue.
 Therefore copy isolates the hint's effect instead of charging a no-state model
 prior. `mean_copy` is clipped nats per target token, not an 0–1 probability.
 E1 then averages turn scores within each session and gives sessions equal
-weight; GRPO keeps the signal local to the turn whose hint produced it.
+weight. GRPO applies one candidate task hint to every standard decision turn
+and returns the same session-average reward for that hint.
 
 The sparse dose KL is a stable coarse-grained lower bound on shared explicit
 support plus one tail bucket. Treat it only as an internal penalty proxy, not as

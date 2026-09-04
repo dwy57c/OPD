@@ -142,6 +142,23 @@ def test_copy_does_not_charge_context_removal_prior():
     assert result.mean_copy == pytest.approx(0.0)
 
 
+def test_session_reward_equal_weights_decision_turns():
+    utility = object.__new__(TeacherForcedUsefulnessScorer)
+    values = {
+        "a": SimpleNamespace(mean_lift=1.0, mean_copy=0.2, mean_dose_kl=0.1),
+        "b": SimpleNamespace(mean_lift=0.0, mean_copy=0.0, mean_dose_kl=0.3),
+    }
+    utility.score = lambda state_hash, **_kwargs: values[state_hash]
+    result = utility.score_session(
+        student_visible_session=[messages(), messages()],
+        hint="one task hint",
+        state_hashes=["a", "b"],
+    )
+    assert result.mean_lift == pytest.approx(0.5)
+    assert result.mean_copy == pytest.approx(0.1)
+    assert result.mean_dose_kl == pytest.approx(0.2)
+
+
 def test_per_token_lift_and_copy_are_clipped():
     utility, _ = scorer((3.0, 3.0), clip=1.25)
     result = utility.score(
@@ -194,7 +211,7 @@ def test_reward_callback_has_no_rollout_or_discriminator_dependency():
         def to_dict():
             return {"mean_lift": 2.0, "mean_copy": 0.5, "mean_dose_kl": 0.3}
 
-    reward.usefulness = SimpleNamespace(score=lambda **_kwargs: Signals())
+    reward.usefulness = SimpleNamespace(score_session=lambda **_kwargs: Signals())
     reward.hinter_tokenizer = SimpleNamespace(
         encode=lambda hint, add_special_tokens=False: hint.split()
     )
@@ -208,7 +225,8 @@ def test_reward_callback_has_no_rollout_or_discriminator_dependency():
         ["short hint", "different hint"],
         state_hash=["s", "s"],
         public_state=[[{"role": "user", "content": "x"}]] * 2,
-        student_visible_messages=[visible, visible],
+        student_visible_session=[[visible], [visible]],
+        state_hashes=[["turn-s"], ["turn-s"]],
         tools=[[], []],
         privileged_context=[
             {"authoritative_oracle_steps": "private"},
@@ -218,7 +236,7 @@ def test_reward_callback_has_no_rollout_or_discriminator_dependency():
     assert values == pytest.approx([1.1, 1.1])
 
 
-def test_grpo_dataset_uses_one_fixed_l3_standard_action_per_state():
+def test_grpo_dataset_uses_one_hint_and_all_l3_turns_per_session():
     standard_messages = [
         {"role": "system", "content": "policy"},
         {"role": "user", "content": "help"},
@@ -226,6 +244,8 @@ def test_grpo_dataset_uses_one_fixed_l3_standard_action_per_state():
     ]
     common = {
         "state_hash": "s",
+        "session_id": "task:42",
+        "task_id": "task",
         "public_state": [{"role": "user", "content": "help"}],
         "student_profile": {
             "unhinted_success": 0.2,
@@ -255,9 +275,10 @@ def test_grpo_dataset_uses_one_fixed_l3_standard_action_per_state():
     ]
     result = build_hinter_grpo_dataset(rows)
     assert len(result) == 1
-    assert result[0].student_visible_messages[-1]["content"] == "verified standard"
+    assert result[0].student_visible_session[0][-1]["content"] == "verified standard"
+    assert result[0].session_id == "task:42"
     assert result[0].standard_source_level == "L3_ORACLE"
-    assert result[0].scenario_id == "s"
+    assert result[0].scenario_id == "task"
 
 
 def test_active_token_budget_never_partially_includes_a_row():

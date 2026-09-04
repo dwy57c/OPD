@@ -44,6 +44,7 @@ def build_hinter_cold_start_dataset(
     result = []
     selected_levels: set[HintLevel] = set()
     selected_checkpoints: set[str] = set()
+    selected_sessions: set[tuple[str, str, HintLevel]] = set()
     for source in sources:
         decisions = source.hstar_manifest.get("decisions") or {}
         for row in source.audit_rows:
@@ -58,6 +59,13 @@ def build_hinter_cold_start_dataset(
             level = HintLevel.parse(level_value)
             if row.get("hint_level") != level.value or row.get("hint_error"):
                 continue
+            session_id = str(
+                row.get("session_id")
+                or f"{row.get('task_id', 'task')}:{row.get('seed', 0)}"
+            )
+            session_key = (source.student_checkpoint, session_id, level)
+            if session_key in selected_sessions:
+                continue
             hint = _hint_text(row)
             if not hint:
                 continue
@@ -69,7 +77,9 @@ def build_hinter_cold_start_dataset(
             privileged = narrow_privileged_context(row["privileged_context"])
             student_profile = student_profile_from_decision(decision)
             messages = build_hinter_messages(
-                row["public_state"], privileged, student_profile
+                row.get("task_public_state", row["public_state"]),
+                privileged,
+                student_profile,
             )
             messages.append(
                 {
@@ -83,11 +93,13 @@ def build_hinter_cold_start_dataset(
                     "student_checkpoint": source.student_checkpoint,
                     "student_profile": student_profile,
                     "state_hash": str(row["state_hash"]),
+                    "session_id": session_id,
                     "minimal_sufficient_level": level.value,
                 }
             )
             selected_levels.add(level)
             selected_checkpoints.add(source.student_checkpoint)
+            selected_sessions.add(session_key)
 
     if len(selected_checkpoints) < 2:
         raise ValueError(

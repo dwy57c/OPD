@@ -133,6 +133,34 @@ def test_main_target_labeler_does_not_run_a_takeover_continuation():
     assert result.teacher_action.hint == {"seed": 7}
 
 
+def test_teacher_generator_creates_one_hint_from_initial_state_per_task():
+    calls = []
+    hint = object()
+
+    class Agent:
+        @staticmethod
+        def plan_for_session(history):
+            calls.append(history)
+            return hint
+
+    class Environment:
+        @staticmethod
+        def initial_history():
+            return [UserMessage(role="user", content="initial task")]
+
+        @staticmethod
+        def orchestrator(history, policy, seed):
+            assert policy == "teacher"
+            return SimpleNamespace(agent=Agent())
+
+    generator = TeacherActionGenerator(Environment())
+    first_state = [UserMessage(role="user", content="actual task request")]
+    assert generator.task_hint(7, first_state) is hint
+    assert generator.task_hint(8) is hint
+    assert len(calls) == 1
+    assert calls[0][0].content == "actual task request"
+
+
 def test_analysis_validator_can_run_one_sided_student_continuations():
     calls = []
 

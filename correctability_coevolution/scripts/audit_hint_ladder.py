@@ -211,6 +211,10 @@ def main() -> None:
 
     rows = []
     probe_sources = []
+    teacher_generators = {}
+    task_public_states = {}
+    for state in states:
+        task_public_states.setdefault(state["session_id"], state["history_before"])
     for state_index, state in enumerate(states):
         for level in levels:
             level_config = replace(
@@ -226,9 +230,11 @@ def main() -> None:
             tools = [
                 tool.openai_schema for tool in (getattr(student, "tools", None) or [])
             ]
-            result = TeacherActionGenerator(environment).generate(
-                decision, state["seed"]
+            generator_key = (state["task_id"], level.value)
+            generator = teacher_generators.setdefault(
+                generator_key, TeacherActionGenerator(environment)
             )
+            result = generator.generate(decision, state["seed"])
             audit_messages = [*decision.history_before, result.action]
             behavior = auditor.analyze(audit_messages)
             hint_note = ""
@@ -276,17 +282,20 @@ def main() -> None:
             )
             row = {
                 "state_id": f"{state['task_id']}:{state_index}",
+                "state_order": state_index,
                 "domain": state["domain"],
                 "task_split": state["task_split"],
                 "task_id": state["task_id"],
                 "state_hash": decision.state_hash,
                 "session_id": state["session_id"],
+                "message_index": decision.message_index,
                 "hint_level": level.value,
                 "hint": result.hint,
                 "hint_error": hint_error,
                 "hint_words": len(hint_note.split()),
                 "teacher_action": result.action.model_dump(mode="json"),
                 "public_state": state["history_before"],
+                "task_public_state": task_public_states[state["session_id"]],
                 "student_profile": student_profile_from_decision(
                     profile_decisions[str(state["task_id"])]
                 ),

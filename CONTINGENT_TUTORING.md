@@ -59,8 +59,8 @@ token, not a probability or a fraction of copied tokens.
 
 E1 aggregates in two stages: token means form one decision-turn score, then
 turns are averaged within each session, and sessions receive equal weight.
-GRPO remains turn-local because a fresh hint is generated at each decision;
-assigning future turns to an earlier hint would misattribute credit.
+One task-level hint is reused at every decision in that session, so GRPO uses
+the same turn-then-session aggregation and returns one reward for that hint.
 
 The dose estimator is the coarse-grained forward KL on shared explicit sparse
 support plus a tail bucket, a stable lower bound that avoids top-k membership

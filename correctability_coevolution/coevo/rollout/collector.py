@@ -7,6 +7,7 @@ from tau2.data_model.message import AssistantMessage
 from coevo.artifacts import artifact_metadata, canonical_hash
 from coevo.environment import Tau2Environment
 from coevo.hints import HintLevel
+from coevo.intervention import DecisionState
 from coevo.environment.tau2 import dump_messages, load_messages
 from coevo.models import format_teacher_system_prompt_with_hint
 from coevo.rollout.views import (
@@ -141,6 +142,14 @@ class NaturalDecisionCollector:
             for index in range(initial_size, len(trunk))
             if isinstance(trunk[index], AssistantMessage)
         ]
+        generator = getattr(self.labeler, "teacher_generator", None)
+        if (
+            message_indexes
+            and generator is not None
+            and generator.action_provider is None
+        ):
+            first_decision = DecisionState.from_history(trunk, message_indexes[0])
+            generator.task_hint(trajectory_seed, first_decision.history_before)
         score_workers = int(os.getenv("COEVO_TURN_SCORE_WORKERS", "1"))
         if score_workers > 1 and self.max_decisions == 0:
             with ThreadPoolExecutor(max_workers=score_workers) as executor:

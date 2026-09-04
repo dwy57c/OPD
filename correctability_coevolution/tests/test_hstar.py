@@ -54,7 +54,7 @@ def test_hstar_marks_nonmonotonic_measurements_and_scheduler_normalizes():
     assert weights == {"task": pytest.approx(1.0)}
 
 
-def test_hinted_probe_refreshes_hint_before_every_agent_turn(monkeypatch):
+def test_hinted_probe_reuses_one_task_hint(monkeypatch):
     observed = []
 
     @dataclass(frozen=True)
@@ -91,7 +91,7 @@ def test_hinted_probe_refreshes_hint_before_every_agent_turn(monkeypatch):
     monkeypatch.setattr("coevo.curriculum.hstar.Tau2Environment", Environment)
     result = probe_scenario(Config(), "1", HintLevel.L2_PROCEDURAL, k=2)
     assert result.successes == 2
-    assert observed == [True, True]
+    assert observed == [False, False]
 
 
 def test_e2_records_teacher_success_for_every_hint_level():

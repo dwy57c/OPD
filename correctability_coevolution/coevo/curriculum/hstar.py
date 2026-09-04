@@ -114,9 +114,9 @@ def probe_scenario(
             if parsed is not HintLevel.L0_NONE:
                 if not hasattr(orchestrator.agent, "refresh_hint_each_turn"):
                     raise ValueError(
-                        "hinted pass@k probe requires a turn-refreshable Teacher"
+                        "hinted pass@k probe requires a task-scoped Teacher hint"
                     )
-                orchestrator.agent.refresh_hint_each_turn = True
+                orchestrator.agent.refresh_hint_each_turn = False
             simulation = orchestrator.run()
             simulation.reward_info = environment.evaluate(simulation)
             reward = float(simulation.reward_info.reward)
