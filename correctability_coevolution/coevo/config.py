@@ -292,6 +292,7 @@ class InfraConfig:
             buyer_reference=ModelEndpoint(
                 os.getenv("COEVO_BUYER_MODEL", "Qwen3-4B"),
                 os.getenv("COEVO_BUYER_URL", f"http://127.0.0.1:{buyer_port}"),
+                os.getenv("COEVO_BUYER_API_KEY", "EMPTY"),
                 max_tokens=branch_max_tokens,
             ),
             previous_policy=previous_policy,

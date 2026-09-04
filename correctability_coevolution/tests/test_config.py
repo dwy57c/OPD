@@ -49,3 +49,17 @@ def test_open_hinter_mode_is_a_supported_teacher_hint_source():
         teacher_hinter=HintEndpoint("hinter", "http://hinter/v1", "key"),
     )
     assert config.teacher_hint_mode == "open_hinter"
+
+
+def test_remote_buyer_receives_its_api_key(monkeypatch):
+    monkeypatch.setenv("COEVO_TEACHER_HINT_MODE", "none")
+    monkeypatch.setenv("COEVO_POLICY_PATH", "/models/current")
+    monkeypatch.setenv("COEVO_BUYER_MODEL", "glm-5.3-flash")
+    monkeypatch.setenv("COEVO_BUYER_URL", "https://gateway.example/v1")
+    monkeypatch.setenv("COEVO_BUYER_API_KEY", "test-only-secret")
+
+    config = InfraConfig.from_env()
+
+    assert config.buyer_reference.model == "glm-5.3-flash"
+    assert config.buyer_reference.base_url == "https://gateway.example/v1"
+    assert bool(config.buyer_reference.api_key)
