@@ -8,6 +8,7 @@ from coevo.hints import (
     hint_fact_leaks,
     hint_instruction,
     prepare_hint_payload,
+    validate_emergent_hint_note,
     validate_hint_note,
 )
 from coevo.models.hinted_teacher import HintedTeacherAgent
@@ -49,6 +50,20 @@ def test_l2_rejects_instance_values_and_accepts_fact_to_procedure():
             validate_hint_note(invalid, payload(), HintLevel.L2_PROCEDURAL)
 
 
+def test_tau2_l3_must_explicitly_use_an_oracle_fact():
+    with pytest.raises(ValueError, match="did not explicitly state"):
+        validate_hint_note(
+            "The relevant record contains the answer, so proceed efficiently.",
+            payload(),
+            HintLevel.L3_ORACLE,
+        )
+    validate_hint_note(
+        "Booking ABC123 has a fee of $75, so use that verified resolution fact.",
+        payload(),
+        HintLevel.L3_ORACLE,
+    )
+
+
 def test_public_fact_audit_is_reusable_by_grpo_reward():
     findings = hint_fact_leaks(
         "Use get_booking_details for ABC123 on 2027-05-03 and quote $75.",
@@ -83,6 +98,7 @@ def test_identifier_audit_allows_slot_names_without_values(text):
         "Use order number ABC123 before searching.",
         "The booking ID is ZX-99881.",
         "Use confirmation number 123456.",
+        "Use booking code ZX99AB before searching.",
     ],
 )
 def test_identifier_audit_still_rejects_concrete_values(text):
@@ -172,13 +188,31 @@ def test_l1_payload_removes_all_structured_privilege():
         assert key not in prepared
 
 
+def test_l2_is_blind_to_privileged_facts_but_validator_can_still_audit_them():
+    source = {
+        **alfworld_payload(),
+        "task": "Put a hot mug in a cabinet.",
+        "current_history": [{"role": "user", "content": "room overview"}],
+    }
+    prepared = prepare_hint_payload(source, HintLevel.L2_PROCEDURAL)
+    assert set(prepared) == {"domain", "task", "current_history", "hint_level"}
+    assert "coffeemachine" not in str(prepared)
+    with pytest.raises(ValueError, match="structured_fact:coffee machine"):
+        validate_hint_note(
+            "Inspect the coffee machine first, then confirm what is there.",
+            source,
+            HintLevel.L2_PROCEDURAL,
+        )
+
+
 def test_domain_slot_changes_the_prompt_and_l3_requires_disclosure():
     l2 = hint_instruction(HintLevel.L2_PROCEDURAL, "alfworld")
     l3 = hint_instruction(HintLevel.L3_ORACLE, "alfworld")
     normalized_l2 = " ".join(l2.split())
     normalized_l3 = " ".join(l3.split())
     assert "which receptacle currently holds" in normalized_l2
-    assert "most plausible spot" in normalized_l2
+    assert "only the public state and goal" in normalized_l2
+    assert "incomplete candidate list" in normalized_l2
     assert "MUST use it explicitly" in normalized_l3
     assert "Do not withhold a fact" in normalized_l3
 
@@ -208,6 +242,18 @@ def test_hint_levels_enforce_channel_capacity():
             " ".join(["oracle"] * 141) + ".",
             {"available_tools": []},
             HintLevel.L3_ORACLE,
+        )
+
+
+def test_emergent_validator_ignores_self_report_but_rejects_facts():
+    validate_emergent_hint_note(
+        "level: L3\nAsk for the missing lookup key and verify the retrieved record.",
+        payload(),
+    )
+    with pytest.raises(ValueError, match="fact audit"):
+        validate_emergent_hint_note(
+            "level: L1\nUse booking ZX99AB and proceed.",
+            payload(),
         )
 
 

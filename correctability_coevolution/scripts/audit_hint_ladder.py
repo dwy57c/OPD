@@ -18,6 +18,11 @@ from coevo.config import InfraConfig
 from coevo.environment import Tau2Environment
 from coevo.environment.tau2 import dump_messages, load_messages
 from coevo.hints import HINT_LEVELS, HintLevel
+from coevo.hinter_prompt import narrow_privileged_context
+from coevo.hinter_training import (
+    TeacherForcedUsefulnessScorer,
+    calibrate_copying_weight,
+)
 from coevo.intervention import DecisionState, TeacherActionGenerator
 from coevo.models.hinted_teacher import oracle_steps_from_task
 from coevo.rollout import student_view
@@ -35,7 +40,8 @@ def summarize_level_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
     valid = [row for row in rows if not row.get("hint_error")]
     attempted = len(rows)
     count = len(valid) or 1
-    return {
+    scored = [row["analytical_signals"] for row in valid if row.get("analytical_signals")]
+    result = {
         "rows": attempted,
         "valid_rows": len(valid),
         "hint_error_rows": attempted - len(valid),
@@ -53,6 +59,22 @@ def summarize_level_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
         )
         / count,
     }
+    if scored:
+        result.update(
+            {
+                "mean_lift": sum(row["mean_lift"] for row in scored) / len(scored),
+                "mean_copy": sum(row["mean_copy"] for row in scored) / len(scored),
+                "mean_dose_kl": sum(row["mean_dose_kl"] for row in scored)
+                / len(scored),
+                "copy_fraction": sum(row["copy_fraction"] for row in scored)
+                / len(scored),
+                "transferable_fraction": sum(
+                    row["transferable_fraction"] for row in scored
+                )
+                / len(scored),
+            }
+        )
+    return result
 
 
 def _states_from_trajectories(path: Path) -> list[dict[str, Any]]:
@@ -125,6 +147,12 @@ def main() -> None:
     )
     parser.add_argument("--run-leakage-probe", action="store_true")
     parser.add_argument(
+        "--score-transfer",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Run the three teacher-forced E1 copy/transfer decomposition.",
+    )
+    parser.add_argument(
         "--validate-standard-actions",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -151,6 +179,9 @@ def main() -> None:
             config.nl_judge or config.policy, retries=config.nl_judge_retries
         )
     auditor = BehaviorAuditor(grounding)
+    transfer_scorer = (
+        TeacherForcedUsefulnessScorer(config) if args.score_transfer else None
+    )
 
     rows = []
     probe_sources = []
@@ -202,6 +233,21 @@ def main() -> None:
                 standard_eligible = (
                     validation.teacher_quality >= args.standard_quality_threshold
                 )
+            public_privilege = {
+                "domain_policy": student.domain_policy,
+                "authoritative_oracle_steps": oracle_steps_from_task(environment.task),
+            }
+            fact_audit_context = {
+                "domain": state["domain"],
+                "available_tools": tools,
+                "authoritative_oracle_steps": public_privilege[
+                    "authoritative_oracle_steps"
+                ],
+            }
+            student_messages = student_view(
+                student.system_prompt,
+                [*decision.history_before, result.action],
+            )
             row = {
                 "state_id": f"{state['task_id']}:{state_index}",
                 "domain": state["domain"],
@@ -214,22 +260,14 @@ def main() -> None:
                 "hint_words": len(hint_note.split()),
                 "teacher_action": result.action.model_dump(mode="json"),
                 "public_state": state["history_before"],
-                "privileged_context": {
-                    "hint_level": level.value,
-                    "domain": state["domain"],
-                    "domain_policy": student.domain_policy,
-                    "authoritative_oracle_steps": oracle_steps_from_task(
-                        environment.task
-                    ),
-                },
-                "student_visible_messages": student_view(
-                    student.system_prompt,
-                    [*decision.history_before, result.action],
-                ),
+                "privileged_context": narrow_privileged_context(public_privilege),
+                "fact_audit_context": fact_audit_context,
+                "student_visible_messages": student_messages,
                 "tools": tools,
                 "standard_action_eligible": standard_eligible,
                 "standard_validation": standard_validation,
                 "behavior": behavior.to_dict(),
+                "analytical_signals": None,
             }
             rows.append(row)
             if not hint_error:
@@ -245,6 +283,35 @@ def main() -> None:
                     }
                 )
 
+    if transfer_scorer is not None:
+        state_ids = {str(row["state_id"]) for row in rows}
+        for state_id in state_ids:
+            state_rows = [row for row in rows if str(row["state_id"]) == state_id]
+            standards = [
+                row
+                for row in state_rows
+                if row["hint_level"] == HintLevel.L3_ORACLE.value
+                and not row.get("hint_error")
+                and (
+                    row.get("standard_action_eligible")
+                    or not args.validate_standard_actions
+                )
+            ]
+            if len(standards) != 1:
+                continue
+            standard = standards[0]
+            for row in state_rows:
+                hint = row.get("hint") or {}
+                hint_note = str((hint.get("hint") or {}).get("plan") or "")
+                if not hint_note or row.get("hint_error"):
+                    continue
+                row["analytical_signals"] = transfer_scorer.score(
+                    student_visible_messages=standard["student_visible_messages"],
+                    hint=hint_note,
+                    state_hash=standard["state_hash"],
+                    tool_schemas=standard["tools"],
+                ).to_dict()
+
     args.output_dir.mkdir(parents=True, exist_ok=True)
     _write_jsonl(args.output_dir / "audit_rows.jsonl", rows)
     _write_jsonl(args.output_dir / "probe_source_rows.jsonl", probe_sources)
@@ -252,6 +319,12 @@ def main() -> None:
     for level in levels:
         selected = [row for row in rows if row["hint_level"] == level.value]
         summary["levels"][level.value] = summarize_level_rows(selected)
+    l3 = summary["levels"].get(HintLevel.L3_ORACLE.value, {})
+    if l3.get("mean_copy", 0) > 0:
+        summary["recommended_copying_weight_from_l3"] = calibrate_copying_weight(
+            l3_mean_lift=l3["mean_lift"],
+            l3_mean_copy=l3["mean_copy"],
+        )
 
     if args.run_leakage_probe:
         judge = NLLeakageJudge(

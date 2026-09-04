@@ -23,6 +23,7 @@ from coevo.scoring.skill_contrast import (
     SkillContrastConfig,
     construct_skill_contrast_target,
 )
+from coevo.scoring.purified_target import construct_purified_target
 from coevo.scoring.teacher_target import (
     TEACHER_TARGET_SCHEMA_VERSION,
     TeacherTargetRecord,
@@ -217,7 +218,13 @@ class TeacherTargetBuilder:
         self.cache_hits = 0
         self.cache_misses = 0
         self.scoring_failures = 0
-        self._gate_config_hash = canonical_hash(asdict(self.skill_config))
+        self._gate_config_hash = canonical_hash(
+            {
+                **asdict(self.skill_config),
+                "target_operator": config.target_operator,
+                "purified_beta": config.purified_beta,
+            }
+        )
         self._tokenizer_hash = canonical_hash(
             {
                 "tokenizer_id": config.tokenizer_id,
@@ -464,7 +471,20 @@ class TeacherTargetBuilder:
                     tool_schemas=tool_schemas,
                 ),
             }
-            with ThreadPoolExecutor(max_workers=2) as executor:
+            if self.config.target_operator == "purified":
+                requests_to_score["hint_only"] = dict(
+                    endpoint=self.config.teacher,
+                    checkpoint_id=teacher_checkpoint,
+                    state_hash=state_hash,
+                    action_hash=action_hash,
+                    information_view="teacher_anchor_hint_only",
+                    messages=[
+                        deepcopy(hinted_teacher_messages[0]),
+                        deepcopy(hinted_teacher_messages[-1]),
+                    ],
+                    tool_schemas=tool_schemas,
+                )
+            with ThreadPoolExecutor(max_workers=len(requests_to_score)) as executor:
                 futures = {
                     name: executor.submit(self.score_view, **arguments)
                     for name, arguments in requests_to_score.items()
@@ -474,13 +494,22 @@ class TeacherTargetBuilder:
             unhinted = views["unhinted"]
             if hinted.target_input_ids != unhinted.target_input_ids:
                 raise ValueError("hinted and unhinted target token IDs do not align")
-            contrast = construct_skill_contrast_target(
-                hinted_topk_logprobs=hinted.topk_logprobs,
-                hinted_topk_token_ids=hinted.topk_token_ids,
-                unhinted_topk_logprobs=unhinted.topk_logprobs,
-                unhinted_topk_token_ids=unhinted.topk_token_ids,
-                target_token_ids=hinted.target_input_ids,
-                config=self.skill_config,
+            contrast = (
+                construct_purified_target(
+                    unhinted=unhinted,
+                    hinted=hinted,
+                    hint_only=views["hint_only"],
+                    beta=self.config.purified_beta,
+                )
+                if self.config.target_operator == "purified"
+                else construct_skill_contrast_target(
+                    hinted_topk_logprobs=hinted.topk_logprobs,
+                    hinted_topk_token_ids=hinted.topk_token_ids,
+                    unhinted_topk_logprobs=unhinted.topk_logprobs,
+                    unhinted_topk_token_ids=unhinted.topk_token_ids,
+                    target_token_ids=hinted.target_input_ids,
+                    config=self.skill_config,
+                )
             )
             raw_hash = canonical_hash(
                 TeacherTargetRecord.raw_hash_payload(

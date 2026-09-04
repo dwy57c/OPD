@@ -25,8 +25,8 @@ The hint ladder is shared by every experiment:
 |---|---|
 | `L0_NONE` | No hint and no hinter API call. Evaluation-only base control. |
 | `L1_POLICY` | 15–40 word general policy or safety reminder; oracle steps are removed before the request. |
-| `L2_PROCEDURAL` | Facts are rewritten as procedures for asking, looking up, or confirming them; instance values are forbidden. |
-| `L3_ORACLE` | Full natural-language oracle note; instance facts are permitted. |
+| `L2_PROCEDURAL` | Blind-written from only public state and goal; hidden facts remain available only to validation. |
+| `L3_ORACLE` | Full natural-language oracle note; supplied instance facts must be stated. |
 
 `COEVO_SHARPEN_ENABLED=0` is the experimental default. Student training retains
 the repository's true on-policy GKD path: the Student samples a fresh macro-action
@@ -42,13 +42,13 @@ the dose-response experiment; it is the untouched base checkpoint.
 | `correctability_coevolution/coevo/audit/behavior.py` | clarification, lookup, and public-grounding metrics |
 | `correctability_coevolution/coevo/audit/leakage_probe.py` | conditional `(s,a,h)` leakage probe and s-only baseline |
 | `correctability_coevolution/coevo/curriculum/hstar.py` | frozen-checkpoint pass@k probes, h*, and four-band scheduling |
-| `correctability_coevolution/coevo/hinter_training/grpo_reward.py` | two-forward usefulness, behavior-copy penalty, and token-length penalty |
-| `correctability_coevolution/coevo/hinter_training/behavior_discriminator.py` | Student-sized scalar head with same-state pairwise ranking loss |
+| `correctability_coevolution/coevo/hinter_training/grpo_reward.py` | three-view analytical lift/copy/dose/length reward |
+| `correctability_coevolution/coevo/hinter_training/cold_start.py` | multi-checkpoint, minimal-dose-diverse hinter SFT selection |
 | `correctability_coevolution/coevo/hinter_training/alternating_loop.py` | Student N steps, pass@k scheduling, hinter GRPO, acceptance rollback |
 | `correctability_coevolution/scripts/audit_hint_ladder.py` | E1 runner |
 | `correctability_coevolution/scripts/run_dosage_experiment.py` | E2 equal-active-token runner |
 | `correctability_coevolution/scripts/run_dosage_curriculum.py` | E3 controller and baselines |
-| `correctability_coevolution/scripts/collect_dosage_curriculum.py` | weighted mixed-level E3 dataset executor |
+| `correctability_coevolution/scripts/collect_dosage_curriculum.py` | weighted scenario sampler for unlevelled `HINTER` rows |
 | `correctability_coevolution/scripts/run_alternating_rounds.py` | manifest-backed Student/hinter subprocess driver |
 | `correctability_coevolution/scripts/evaluate_behavior.py` | behavior audit for evaluation conversations |
 
@@ -98,7 +98,7 @@ co-evolution loop.
 - Compare hint levels on the same public states and active-token budget.
 - Condition leakage probes on the public state and report advantage over an
   s-only baseline.
-- Use fresh probes and behavior endpoints to audit the training discriminator.
+- Calibrate analytical copy weight from natural E1 L3 hints and retain the hard rule gate.
 - Never mix hint levels or incompatible target contracts in one artifact merge.
 - Evaluate the Student without private hints and with a fixed independent user
   simulator.

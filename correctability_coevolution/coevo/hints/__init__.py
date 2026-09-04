@@ -4,6 +4,7 @@ from .ladder import (
     hint_fact_leaks,
     hint_instruction,
     prepare_hint_payload,
+    validate_emergent_hint_note,
     validate_hint_note,
 )
 
@@ -13,5 +14,6 @@ __all__ = [
     "hint_fact_leaks",
     "hint_instruction",
     "prepare_hint_payload",
+    "validate_emergent_hint_note",
     "validate_hint_note",
 ]

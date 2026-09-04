@@ -1,41 +1,38 @@
 # Contingent-tutoring setup
 
-## 1. Runtime
+## Runtime
 
-Copy the example environment file and set local model paths. Keep credentials in
-the process environment, not in the repository.
+Keep credentials outside the repository. The E4 eight-GPU layout is fixed:
+
+| role | GPU |
+|---|---|
+| frozen policy service | 0 |
+| open-hinter service | 1 |
+| hinter training | 2–7 |
 
 ```bash
 cp ../.env.example ../.env
-export COEVO_POLICY_PATH=/absolute/path/to/student-checkpoint
-export COEVO_BUYER_PATH=/absolute/path/to/fixed-user-model
-export COEVO_TEACHER_HINT_URL=https://gateway.example/v1
-export COEVO_TEACHER_HINT_API_KEY=...
-export COEVO_TEACHER_HINT_MODEL=gemini-3.1-pro-preview
-export COEVO_SHARPEN_ENABLED=0
+export COEVO_POLICY_PATH=/path/to/current-student
+export COEVO_POLICY_GPUS=0
+export COEVO_HINTER_BASE_MODEL=/path/to/open-hinter
+export COEVO_HINTER_URL=http://127.0.0.1:8004
+export COEVO_HINTER_MODEL=hinter
+export COEVO_HINTER_GPUS=1
+export COEVO_HINTER_TRAIN_GPUS=2,3,4,5,6,7
 ```
 
-The active E1–E3 path needs the policy endpoint on port 8000 and the fixed τ²
-user endpoint on port 8002. It does not need `policy_previous` or the Buyer GRPO
-rollout server.
+Run checks with:
 
 ```bash
-export COEVO_START_ROLLOUT=false
-bash scripts/start_servers.sh
-python scripts/preflight.py services
-```
-
-## 2. Tests
-
-```bash
-pytest -q
 ruff check coevo scripts tests
+pytest -q
 ```
 
-## 3. E1 static audit
+## E1: fixed-ladder audit
 
-First collect or select an immutable public-state pool. Then generate every hint
-level against those same states:
+Collect one immutable L0 public-state pool, then audit L1/L2/L3 on the same
+states. L2 is blind-written from the public state and goal; its hidden facts
+are retained only by the validator. L3 must state hidden facts explicitly.
 
 ```bash
 python scripts/collect_round.py \
@@ -49,150 +46,127 @@ python scripts/audit_hint_ladder.py \
   --output-dir artifacts/e1_hint_audit
 ```
 
-L3 standard actions are continuation-validated by default and only perfect
-actions are eligible for the fixed GRPO target. Change
-`--standard-quality-threshold` explicitly if a softer audited target is needed.
+The audit runs the same three teacher-forced views used by GRPO and reports
+mean lift, mean analytical copy, dose KL, and copy/transferable fractions.
+`recommended_copying_weight_from_l3` sets lambda from the observed L3 anchor.
+Generate the counterfactual rows by rotating only hidden facts, then render the
+two E1 figures:
 
-The grounding judge is enabled by default. Use
-`--no-use-grounding-judge` only for infrastructure smoke tests; such output is
-not sufficient for a behavioral claim.
+```bash
+python scripts/generate_hint_counterfactuals.py \
+  artifacts/e1_hint_audit/audit_rows.jsonl \
+  --output artifacts/e1_counterfactual_rows.jsonl
+python scripts/evaluate_hint_counterfactuals.py \
+  artifacts/e1_hint_audit/audit_rows.jsonl \
+  artifacts/e1_counterfactual_rows.jsonl \
+  --output artifacts/e1_counterfactual.json
+python scripts/plot_e1_hint_metrics.py \
+  artifacts/e1_hint_audit/summary.json \
+  artifacts/e1_counterfactual.json \
+  --output-dir artifacts/e1_figures
+```
 
-## 4. E2 equal-budget dose response
+## E2: equal-budget source and sink controls
 
-The runner collects one L0 public-state pool per seed, re-labels the exact same
-states at L1/L2/L3, chooses the smallest available reference-token total, and
-trains every arm to that budget.
-It also records per-task and aggregate L0/L1/L2/L3 Teacher success rates using
-turn-refreshed hints, so Student results can be separated from Teacher quality.
+The runner factorially compares raw versus Purified-OPSD targets at every hint
+level while retaining identical states, seeds, and active-token budgets. It
+also reports teacher-side pass rates for every fixed level.
 
 ```bash
 python scripts/run_dosage_experiment.py \
   --output-dir artifacts/e2_dosage \
   --task-ids 1 2 3 \
   --seeds 42 43 44 \
+  --target-operators raw purified \
   --student-steps 100
 ```
 
-Evaluate each resulting checkpoint with the fixed held-out user, save the τ²
-conversations, and run:
+The purified sink uses
+`P_target ∝ P0 exp((log q(s,h) - log p(h)) / COEVO_PURIFIED_BETA)`.
+
+## E3: curriculum sensor
+
+The fixed-ladder experiment still measures L0–L3 and supports fixed/random
+baselines. During coevolution, set `COEVO_HINT_LEVEL=HINTER`; the controller
+then measures only L0 versus the current open hinter. It uses those results to
+classify and weight scenarios without selecting a hint level.
 
 ```bash
-python scripts/evaluate_behavior.py evaluation.jsonl \
-  --output artifacts/e2_behavior.json
-```
-
-## 5. E3 h* controller
-
-```bash
+COEVO_HINT_LEVEL=HINTER COEVO_TEACHER_HINT_MODE=open_hinter \
+COEVO_TEACHER_HINT_URL="$COEVO_HINTER_URL" \
+COEVO_TEACHER_HINT_MODEL="$COEVO_HINTER_MODEL" \
+COEVO_TEACHER_HINT_API_KEY="${COEVO_HINTER_API_KEY:-EMPTY}" \
 python scripts/run_dosage_curriculum.py \
-  --output-dir artifacts/e3_hstar \
-  --task-ids 1 2 3 \
-  --k 8 \
-  --policy hstar
+  --output-dir artifacts/e3_hstar --task-ids 1 2 3 --k 8
 ```
 
-Baselines use `--policy fixed:L3`, `fixed:L2`, or `random`.
+`collect_dosage_curriculum.py` consumes only the sampling weights. Mastered/L0
+rows are excluded, and every selected training row has
+`sample_hint_level=HINTER`.
 
-The controller manifest is executable. Consume its sampling weights and
-per-task levels into one `MIXED` dataset:
+## Cold-start hinter SFT
+
+Cold start is fail-closed: it requires at least two Student checkpoints and at
+least two non-zero minimal sufficient doses. Each `--source` contains the
+checkpoint identity, its E1 rows, and its h* manifest.
 
 ```bash
-python scripts/collect_dosage_curriculum.py \
-  --manifest artifacts/e3_hstar/dosage_manifest.json \
-  --source-trajectories artifacts/public_states/trajectories.jsonl \
-  --output-dir artifacts/e3_hstar/student_data \
-  --samples 100
+python scripts/build_hinter_cold_start_dataset.py \
+  --source student_0 artifacts/e1_s0/audit_rows.jsonl artifacts/hstar_s0.json \
+  --source student_1 artifacts/e1_s1/audit_rows.jsonl artifacts/hstar_s1.json \
+  --output artifacts/hinter_cold_start.jsonl
 ```
 
-## 6. Hinter GRPO and alternation
+## E4: three-view GRPO and alternation
 
-Build one fixed-standard-action row per audited state. The default uses the
-eligible L3 action as the standard trajectory, but candidate hints cannot change
-that target:
+Build one fixed standard trajectory per audited state:
 
 ```bash
 python scripts/build_hinter_grpo_dataset.py \
-  artifacts/e1_hint_audit/audit_rows.jsonl \
-  artifacts/hinter_grpo.jsonl
+  artifacts/e1_hint_audit/audit_rows.jsonl artifacts/hinter_grpo.jsonl
 ```
 
-Before each hinter update, regenerate actual Student macro-actions under several
-hints for every state. Generate the three mandatory controls, create same-state
-pairwise labels, and initialize a Student-sized scalar-head discriminator from
-the current Student checkpoint:
+The reward uses three parallel teacher-forced calls to the same frozen Student:
 
-```bash
-python scripts/collect_discriminator_controls.py \
-  artifacts/hinter_grpo.jsonl \
-  --audit-rows artifacts/e1_hint_audit/audit_rows.jsonl \
-  --output-dir artifacts/discriminator_controls_t
-
-python scripts/collect_behavior_hint_samples.py \
-  artifacts/hinter_grpo.jsonl artifacts/current_behavior_samples.jsonl \
-  --hints-per-state 4
-
-python scripts/build_copying_discriminator_dataset.py \
-  artifacts/current_behavior_samples.jsonl \
-  artifacts/copying_discriminator_round_t.jsonl \
-  --explicit-copy-controls artifacts/discriminator_controls_t/explicit_copy_controls.jsonl \
-  --useless-controls artifacts/discriminator_controls_t/useless_controls.jsonl \
-  --natural-copy-pairs artifacts/discriminator_controls_t/explicit_copy_natural_pairs.jsonl
-
-python scripts/train_behavior_discriminator.py \
-  --student-checkpoint /path/to/current-student \
-  --pairs artifacts/copying_discriminator_round_t.jsonl \
-  --output-dir artifacts/copying_discriminator_t
-
-CUDA_VISIBLE_DEVICES=7 python scripts/serve_behavior_discriminator.py \
-  --model artifacts/copying_discriminator_t --port 8010
+```text
+lift_t = clip(log q(a*_t | s,h) - log p(a*_t | s), -c, c)
+copy_t = clip(max(log p(a*_t | h) - log p(a*_t | s), 0), 0, c)
+dose   = max(mean_t KL(q_h || p) - bandwidth, 0)
+R      = mean(lift) - lambda mean(copy) - nu dose - mu tokens(h)
 ```
 
-Then freeze that discriminator and run the only hinter reward:
+The sparse dose KL is a stable coarse-grained lower bound on shared explicit
+support plus one tail bucket. Rule-detected fact/tool leakage still caps reward
+at a negative floor. No Student rollout, learned discriminator, pass@k, or
+post-distillation gain enters GRPO.
 
 ```bash
-export COEVO_HINTER_BASE_MODEL=/path/to/open-hinter
-export COEVO_HINTER_TUNER_TYPE=full
-export COEVO_HINTER_DISCRIMINATOR_URL=http://127.0.0.1:8010
 export COEVO_HINTER_COPY_WEIGHT=1.0
+export COEVO_HINTER_DOSE_WEIGHT=1.0
 export COEVO_HINTER_LENGTH_WEIGHT=0.002
+export COEVO_HINTER_TOKEN_CLIP=5.0
+export COEVO_HINTER_DOSE_BANDWIDTH=0.05
 export COEVO_HINTER_RULE_LEAK_FLOOR=1.0
-export COEVO_HINTER_ANCHOR_BETA=0.01
 export COEVO_HINTER_REWARD_TRACE_PATH=artifacts/hinter_reward_round_t.jsonl
 bash scripts/train_hinter_grpo.sh \
   artifacts/hinter_grpo.jsonl artifacts/hinter_round_t 20
 ```
 
-`coevo/hinter_training/alternating_loop.py` fixes the outer order: Student N
-steps, one pass@k measurement for both delayed acceptance and curriculum,
-fresh discriminator retraining, then hinter GRPO. A regression rolls back the
-Student segment and the prior hinter candidate; no pass@k or observed
-distillation gain is passed to GRPO.
+The open hinter receives exactly `{domain_policy,
+authoritative_oracle_steps}` as privileged context. Its public state uses the
+same canonical serializer in serving and GRPO. It self-reports `level: L1`,
+`L2`, or `L3` for fading plots, but the label is neither required nor rewarded.
 
-Every few rounds, rerun `train_behavior_discriminator.py` from the same current
-Student with a different seed and empty output directory, then compare it with
-the active scorer using `compare_behavior_discriminators.py`. This independent
-auditor is not reused for training rewards.
+The outer loop is only:
 
-For production alternation, `scripts/run_alternating_rounds.py` turns every
-callback into a checked subprocess stage, persists per-round manifests and
-state, and executes rollback commands. Its `--commands` JSON contains argv
-templates for the nine named stages; every stage receives its required output
-path as both `{output}` and `COEVO_STAGE_OUTPUT`.
-
-The repository includes a schema-compatible command set. Before every Student
-update it consumes the previous h* manifest, asks the currently served
-`hinter_under_test` through `teacher_hint_mode=open_hinter`, rebuilds the mixed
-Student dataset, and trains from `{student}`. Both Student and hinter therefore
-accumulate across rounds.
+```text
+distill Student N steps with the current hinter candidate
+measure deployment pass@k once
+accept or roll back the Student and prior hinter; reuse the panel for scheduling
+train the next hinter candidate for a few analytical-reward GRPO steps
+```
 
 ```bash
-export COEVO_ALTERNATING_TASK_IDS="1 2 3"
-export COEVO_ALTERNATING_SAMPLES=100
-export COEVO_HINTER_GRPO_DATASET=/path/to/hinter_grpo.jsonl
-export COEVO_HINT_AUDIT_ROWS=/path/to/e1/audit_rows.jsonl
-export COEVO_HINTER_URL=http://127.0.0.1:8004
-export COEVO_HINTER_MODEL=hinter
-
 python scripts/run_alternating_rounds.py \
   --commands configs/alternating_commands.example.json \
   --scenario-pool /path/to/scenario_pool.json \
@@ -200,40 +174,26 @@ python scripts/run_alternating_rounds.py \
   --bootstrap-curriculum-manifest /path/to/bootstrap/dosage_manifest.json \
   --student-checkpoint /path/to/student \
   --hinter-checkpoint /path/to/hinter \
-  --output-dir artifacts/alternating \
-  --rounds 3
+  --output-dir artifacts/alternating --rounds 3
 ```
 
-The adapters under `scripts/stages/` translate existing checkpoint, dosage,
-discriminator, and independent-auditor artifacts into the driver's strict JSON
-contracts. A stage that fails its gate or omits its output aborts the round with
-a failed manifest.
+## ALFWorld
 
-ALFWorld hinter rows must provide explicit structured privilege rather than
-only an expert action sequence:
+Use AgentGym/ETO train, `valid_seen`, and `valid_unseen` splits. Normalize each
+record with `privilege_from_agentgym_eto_record`; the required privileged source
+is the expert action trajectory plus simulator hidden state:
 
 ```json
 {
-  "domain": "alfworld",
   "goal_object_locations": {"mug": "coffeemachine 1"},
   "destination_receptacle": "cabinet 4",
   "unobserved_states": {"mug": "cold"}
 }
 ```
 
-L1 removes these fields, L2 converts them into unbiased observation procedures,
-and L3 must disclose them as natural-language facts.
+The ALFWorld behavior audit reports whether the first navigation target directly
+hits the true hidden location and whether any look/open/inspect action occurred
+before pickup.
 
-## 7. Detector validation
-
-Human-label at least 200 rows per detector and report agreement and Cohen's
-kappa:
-
-```bash
-python scripts/validate_behavior_detectors.py annotations.jsonl \
-  --output artifacts/detector_validation.json \
-  --minimum-rows 200
-```
-
-The retired Buyer/LP setup is preserved in
-`../docs/archive/SETUP_BUYER_LP.md` for historical reproduction only.
+The retired Buyer/LP and discriminator designs remain available only through
+Git history and archived method notes; active code does not import them.

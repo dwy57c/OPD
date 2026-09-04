@@ -1,15 +1,15 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import asdict, dataclass
 import json
+import math
 import os
 from pathlib import Path
 from threading import Lock
 from typing import Any, Mapping, Sequence
 
-from openai import OpenAI
-import requests
 from swift.rewards import ORM
 
 from coevo.artifacts import assistant_action_hash, canonical_hash
@@ -18,20 +18,26 @@ from coevo.hints import hint_fact_leaks
 from coevo.models.hinted_teacher import format_teacher_system_prompt_with_hint
 from coevo.scoring.stage_gap import SparseTargetView, TeacherTargetBuilder
 
-from .behavior_discriminator import pairwise_copy_probability
-from .discriminator_data import format_discriminator_input
-
 
 @dataclass(frozen=True)
 class HinterRewardConfig:
+    """Weights for the three-view analytical hinter objective."""
+
     copying_weight: float = 1.0
+    dose_weight: float = 1.0
     length_weight: float = 0.002
+    token_clip: float = 5.0
+    dose_bandwidth: float = 0.05
     max_hint_tokens: int = 192
     rule_leak_floor: float = 1.0
 
     def __post_init__(self) -> None:
-        if self.copying_weight < 0 or self.length_weight < 0:
+        if min(self.copying_weight, self.dose_weight, self.length_weight) < 0:
             raise ValueError("hinter reward weights must be non-negative")
+        if not math.isfinite(self.token_clip) or self.token_clip <= 0:
+            raise ValueError("token_clip must be finite and positive")
+        if not math.isfinite(self.dose_bandwidth) or self.dose_bandwidth < 0:
+            raise ValueError("dose_bandwidth must be finite and non-negative")
         if self.max_hint_tokens < 1:
             raise ValueError("max_hint_tokens must be positive")
         if self.rule_leak_floor <= 0:
@@ -41,7 +47,12 @@ class HinterRewardConfig:
     def from_env(cls) -> "HinterRewardConfig":
         return cls(
             copying_weight=float(os.getenv("COEVO_HINTER_COPY_WEIGHT", "1.0")),
+            dose_weight=float(os.getenv("COEVO_HINTER_DOSE_WEIGHT", "1.0")),
             length_weight=float(os.getenv("COEVO_HINTER_LENGTH_WEIGHT", "0.002")),
+            token_clip=float(os.getenv("COEVO_HINTER_TOKEN_CLIP", "5.0")),
+            dose_bandwidth=float(
+                os.getenv("COEVO_HINTER_DOSE_BANDWIDTH", "0.05")
+            ),
             max_hint_tokens=int(os.getenv("COEVO_HINTER_MAX_HINT_TOKENS", "192")),
             rule_leak_floor=float(
                 os.getenv("COEVO_HINTER_RULE_LEAK_FLOOR", "1.0")
@@ -54,13 +65,19 @@ class TeacherForcedProbabilityTrace:
     state_hash: str
     standard_action_hash: str
     target_token_ids: tuple[int, ...]
-    actual_token_logprobs: tuple[float, ...]
-    top1_token_ids: tuple[int, ...]
-    top1_logprobs: tuple[float, ...]
+    unhinted_actual_logprobs: tuple[float, ...]
+    hinted_actual_logprobs: tuple[float, ...]
+    hint_only_actual_logprobs: tuple[float, ...]
+    token_lifts: tuple[float, ...]
+    token_copies: tuple[float, ...]
+    token_dose_kls: tuple[float, ...]
 
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)
-        return {key: list(item) if isinstance(item, tuple) else item for key, item in value.items()}
+        return {
+            key: list(item) if isinstance(item, tuple) else item
+            for key, item in value.items()
+        }
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "TeacherForcedProbabilityTrace":
@@ -68,34 +85,80 @@ class TeacherForcedProbabilityTrace:
             state_hash=str(value["state_hash"]),
             standard_action_hash=str(value["standard_action_hash"]),
             target_token_ids=tuple(int(item) for item in value["target_token_ids"]),
-            actual_token_logprobs=tuple(
-                float(item) for item in value["actual_token_logprobs"]
+            unhinted_actual_logprobs=tuple(
+                float(item) for item in value["unhinted_actual_logprobs"]
             ),
-            top1_token_ids=tuple(int(item) for item in value["top1_token_ids"]),
-            top1_logprobs=tuple(float(item) for item in value["top1_logprobs"]),
+            hinted_actual_logprobs=tuple(
+                float(item) for item in value["hinted_actual_logprobs"]
+            ),
+            hint_only_actual_logprobs=tuple(
+                float(item) for item in value["hint_only_actual_logprobs"]
+            ),
+            token_lifts=tuple(float(item) for item in value["token_lifts"]),
+            token_copies=tuple(float(item) for item in value["token_copies"]),
+            token_dose_kls=tuple(float(item) for item in value["token_dose_kls"]),
         )
 
 
 @dataclass(frozen=True)
 class TeacherForcedUsefulness:
+    """Three-view token signals for one fixed standard action trajectory."""
+
     unhinted_log_probability: float
     hinted_log_probability: float
-    log_probability_gain: float
+    hint_only_log_probability: float
+    mean_lift: float
+    mean_copy: float
+    mean_dose_kl: float
     target_token_count: int
     probability_trace: TeacherForcedProbabilityTrace
 
     @property
+    def log_probability_gain(self) -> float:
+        return self.hinted_log_probability - self.unhinted_log_probability
+
+    @property
     def per_token_gain(self) -> float:
-        if self.target_token_count < 1:
-            raise ValueError("usefulness requires at least one target token")
-        return self.log_probability_gain / self.target_token_count
+        return self.mean_lift
+
+    @property
+    def transferable_mass(self) -> float:
+        return sum(
+            max(lift - copy, 0.0)
+            for lift, copy in zip(
+                self.probability_trace.token_lifts,
+                self.probability_trace.token_copies,
+            )
+        )
+
+    @property
+    def copy_mass(self) -> float:
+        return sum(self.probability_trace.token_copies)
+
+    @property
+    def copy_fraction(self) -> float:
+        denominator = self.copy_mass + self.transferable_mass
+        return self.copy_mass / denominator if denominator > 0 else 0.0
+
+    @property
+    def transferable_fraction(self) -> float:
+        denominator = self.copy_mass + self.transferable_mass
+        return self.transferable_mass / denominator if denominator > 0 else 0.0
+
+    def dose_excess(self, bandwidth: float) -> float:
+        return max(0.0, self.mean_dose_kl - float(bandwidth))
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "unhinted_log_probability": self.unhinted_log_probability,
             "hinted_log_probability": self.hinted_log_probability,
+            "hint_only_log_probability": self.hint_only_log_probability,
             "log_probability_gain": self.log_probability_gain,
-            "per_token_gain": self.per_token_gain,
+            "mean_lift": self.mean_lift,
+            "mean_copy": self.mean_copy,
+            "mean_dose_kl": self.mean_dose_kl,
+            "copy_fraction": self.copy_fraction,
+            "transferable_fraction": self.transferable_fraction,
             "target_token_count": self.target_token_count,
             "probability_trace": self.probability_trace.to_dict(),
         }
@@ -103,19 +166,23 @@ class TeacherForcedUsefulness:
 
 @dataclass(frozen=True)
 class HinterRewardBreakdown:
-    usefulness: float
-    copying_probability: float
+    mean_lift: float
+    mean_copy: float
+    dose: float
     hint_tokens: int
     copying_weight: float
+    dose_weight: float
     length_weight: float
     rule_leaks: tuple[str, ...] = ()
     rule_leak_floor: float = 1.0
 
     @property
     def copying_penalty(self) -> float:
-        return self.copying_weight * max(
-            0.0, 2.0 * (self.copying_probability - 0.5)
-        )
+        return self.copying_weight * self.mean_copy
+
+    @property
+    def dose_penalty(self) -> float:
+        return self.dose_weight * self.dose
 
     @property
     def length_penalty(self) -> float:
@@ -123,7 +190,12 @@ class HinterRewardBreakdown:
 
     @property
     def reward(self) -> float:
-        base = self.usefulness - self.copying_penalty - self.length_penalty
+        base = (
+            self.mean_lift
+            - self.copying_penalty
+            - self.dose_penalty
+            - self.length_penalty
+        )
         if self.rule_leaks:
             return min(base, -self.rule_leak_floor)
         return base
@@ -132,6 +204,7 @@ class HinterRewardBreakdown:
         value = asdict(self)
         value["rule_leaks"] = list(self.rule_leaks)
         value["copying_penalty"] = self.copying_penalty
+        value["dose_penalty"] = self.dose_penalty
         value["length_penalty"] = self.length_penalty
         value["reward"] = self.reward
         return value
@@ -139,27 +212,42 @@ class HinterRewardBreakdown:
 
 def score_hinter_hint(
     *,
-    usefulness: float,
-    copying_probability: float,
+    mean_lift: float,
+    mean_copy: float,
+    mean_dose_kl: float,
     hint_tokens: int,
     config: HinterRewardConfig,
     rule_leaks: Sequence[str] = (),
 ) -> HinterRewardBreakdown:
-    if not 0 <= copying_probability <= 1:
-        raise ValueError("copying_probability must be in [0, 1]")
+    if mean_copy < 0 or mean_dose_kl < 0:
+        raise ValueError("copy and dose KL signals must be non-negative")
     if hint_tokens < 1:
         raise ValueError("a hint must contain at least one token")
     if hint_tokens > config.max_hint_tokens:
         raise ValueError("candidate hint exceeds the configured hard token cap")
     return HinterRewardBreakdown(
-        usefulness=float(usefulness),
-        copying_probability=float(copying_probability),
+        mean_lift=float(mean_lift),
+        mean_copy=float(mean_copy),
+        dose=max(0.0, float(mean_dose_kl) - config.dose_bandwidth),
         hint_tokens=int(hint_tokens),
         copying_weight=config.copying_weight,
+        dose_weight=config.dose_weight,
         length_weight=config.length_weight,
         rule_leaks=tuple(str(value) for value in rule_leaks),
         rule_leak_floor=config.rule_leak_floor,
     )
+
+
+def calibrate_copying_weight(
+    *, l3_mean_lift: float, l3_mean_copy: float, target_margin: float = 0.0
+) -> float:
+    """Choose lambda so the E1 L3 anchor is neutral or worse before other costs."""
+
+    if l3_mean_copy <= 0:
+        raise ValueError("the E1 L3 anchor must have positive analytical copy")
+    if target_margin < 0:
+        raise ValueError("target_margin must be non-negative")
+    return (max(0.0, float(l3_mean_lift)) + target_margin) / float(l3_mean_copy)
 
 
 def _actual_logprobs(view: SparseTargetView) -> tuple[float, ...]:
@@ -167,44 +255,76 @@ def _actual_logprobs(view: SparseTargetView) -> tuple[float, ...]:
     for actual, token_ids, logprobs in zip(
         view.target_input_ids, view.topk_token_ids, view.topk_logprobs
     ):
-        lookup = {int(token_id): float(logprob) for token_id, logprob in zip(token_ids, logprobs)}
+        lookup = {
+            int(token_id): float(logprob)
+            for token_id, logprob in zip(token_ids, logprobs)
+        }
         if int(actual) not in lookup:
-            raise ValueError("actual standard-trajectory token is absent from Student support")
+            raise ValueError(
+                "actual standard-trajectory token is absent from Student support"
+            )
         values.append(lookup[int(actual)])
     return tuple(values)
 
 
-def _probability_trace(
-    view: SparseTargetView, *, state_hash: str, standard_action_hash: str
-) -> TeacherForcedProbabilityTrace:
-    actual = _actual_logprobs(view)
-    top1_ids = []
-    top1_logs = []
-    for token_ids, logprobs in zip(view.topk_token_ids, view.topk_logprobs):
-        index = max(range(len(logprobs)), key=lambda value: float(logprobs[value]))
-        top1_ids.append(int(token_ids[index]))
-        top1_logs.append(float(logprobs[index]))
-    return TeacherForcedProbabilityTrace(
-        state_hash=state_hash,
-        standard_action_hash=standard_action_hash,
-        target_token_ids=tuple(int(value) for value in view.target_input_ids),
-        actual_token_logprobs=actual,
-        top1_token_ids=tuple(top1_ids),
-        top1_logprobs=tuple(top1_logs),
-    )
+def _distribution(view: SparseTargetView, index: int) -> dict[int, float]:
+    return {
+        int(token_id): math.exp(float(logprob))
+        for token_id, logprob in zip(
+            view.topk_token_ids[index], view.topk_logprobs[index]
+        )
+        if math.isfinite(float(logprob))
+    }
+
+
+def _coarse_token_kl(
+    hinted: SparseTargetView, unhinted: SparseTargetView
+) -> tuple[float, ...]:
+    """Stable lower-bound KL on shared explicit support plus one tail bucket."""
+
+    if hinted.target_input_ids != unhinted.target_input_ids:
+        raise ValueError("dose views must share target token IDs")
+    values = []
+    for index in range(len(hinted.target_input_ids)):
+        q = _distribution(hinted, index)
+        p = _distribution(unhinted, index)
+        shared = sorted(set(q) & set(p))
+        q_values = [q[token_id] for token_id in shared]
+        p_values = [p[token_id] for token_id in shared]
+        q_values.append(max(0.0, 1.0 - sum(q_values)))
+        p_values.append(max(0.0, 1.0 - sum(p_values)))
+        kl = sum(
+            q_value * (math.log(q_value) - math.log(max(p_value, 1e-12)))
+            for q_value, p_value in zip(q_values, p_values)
+            if q_value > 0
+        )
+        values.append(max(0.0, kl))
+    return tuple(values)
+
+
+def _clip(value: float, limit: float) -> float:
+    return min(limit, max(-limit, float(value)))
 
 
 class TeacherForcedUsefulnessScorer:
-    """Score one standard action twice under the same frozen current Student."""
+    """Score tau* under state, state+hint, and hint-only views."""
 
     def __init__(
         self,
         config: InfraConfig,
         *,
         target_builder: TeacherTargetBuilder | None = None,
+        token_clip: float | None = None,
     ):
         self.config = config
         self.target_builder = target_builder or TeacherTargetBuilder(config)
+        self.token_clip = float(
+            token_clip
+            if token_clip is not None
+            else os.getenv("COEVO_HINTER_TOKEN_CLIP", "5.0")
+        )
+        if self.token_clip <= 0:
+            raise ValueError("token_clip must be positive")
 
     def score(
         self,
@@ -221,160 +341,98 @@ class TeacherForcedUsefulnessScorer:
             raise ValueError("standard trajectory must end with an assistant action")
         if not hint.strip():
             raise ValueError("candidate hint must be non-empty")
+
         action_hash = assistant_action_hash(messages[-1])
         checkpoint = self.config.current_policy_checkpoint or self.config.policy.model
-        unhinted = self.target_builder.score_view(
-            endpoint=self.config.policy,
-            checkpoint_id=checkpoint,
-            state_hash=state_hash,
-            action_hash=action_hash,
-            information_view="hinter_reward_unhinted",
-            messages=messages,
-            tool_schemas=list(tool_schemas or []),
+        hint_hash = canonical_hash({"hint": hint.strip()})
+        hinted_system = format_teacher_system_prompt_with_hint(
+            str(messages[0].get("content") or ""), {"plan": hint.strip()}
         )
         hinted_messages = deepcopy(messages)
-        hinted_messages[0]["content"] = format_teacher_system_prompt_with_hint(
-            str(messages[0].get("content") or ""), {"plan": hint.strip()}
-        )
-        hint_hash = canonical_hash({"hint": hint.strip()})
-        hinted = self.target_builder.score_view(
-            endpoint=self.config.policy,
-            checkpoint_id=checkpoint,
-            state_hash=state_hash,
-            action_hash=action_hash,
-            information_view=f"hinter_reward_hinted:{hint_hash}",
-            messages=hinted_messages,
-            tool_schemas=list(tool_schemas or []),
-        )
-        if hinted.target_input_ids != unhinted.target_input_ids:
-            raise ValueError("hinted and unhinted standard-trajectory tokens differ")
-        unhinted_logs = _actual_logprobs(unhinted)
-        hinted_logs = _actual_logprobs(hinted)
-        unhinted_total = sum(unhinted_logs)
-        hinted_total = sum(hinted_logs)
-        return TeacherForcedUsefulness(
-            unhinted_log_probability=unhinted_total,
-            hinted_log_probability=hinted_total,
-            log_probability_gain=hinted_total - unhinted_total,
-            target_token_count=len(hinted_logs),
-            probability_trace=_probability_trace(
-                hinted, state_hash=state_hash, standard_action_hash=action_hash
-            ),
-        )
-
-
-class StudentMacroActionGenerator:
-    """Generate one actual frozen-Student operation record for a candidate hint."""
-
-    def __init__(self, config: InfraConfig):
-        self.config = config
-        base_url = config.policy.base_url.rstrip("/")
-        if not base_url.endswith("/v1"):
-            base_url += "/v1"
-        self.client = OpenAI(base_url=base_url, api_key=config.policy.api_key)
-
-    def generate(
-        self,
-        *,
-        student_visible_messages: Sequence[Mapping[str, Any]],
-        hint: str,
-        tool_schemas: Sequence[Mapping[str, Any]] | None = None,
-    ) -> dict[str, Any]:
-        messages = deepcopy(list(student_visible_messages[:-1]))
-        if not messages or messages[0].get("role") != "system":
-            raise ValueError("Student behavior prompt must start with a system message")
-        messages[0]["content"] = format_teacher_system_prompt_with_hint(
-            str(messages[0].get("content") or ""), {"plan": hint.strip()}
-        )
-        arguments = {
-            "model": self.config.policy.model,
-            "messages": messages,
-            "temperature": 0,
-            "max_tokens": self.config.branch_max_tokens,
-            "extra_body": {
-                "chat_template_kwargs": {"enable_thinking": False}
+        hinted_messages[0]["content"] = hinted_system
+        hint_only_messages = [
+            {**deepcopy(messages[0]), "content": hinted_system},
+            deepcopy(messages[-1]),
+        ]
+        common = {
+            "endpoint": self.config.policy,
+            "checkpoint_id": checkpoint,
+            "state_hash": state_hash,
+            "action_hash": action_hash,
+            "tool_schemas": list(tool_schemas or []),
+        }
+        requests = {
+            "unhinted": {
+                **common,
+                "information_view": "hinter_reward_unhinted",
+                "messages": messages,
+            },
+            "hinted": {
+                **common,
+                "information_view": f"hinter_reward_hinted:{hint_hash}",
+                "messages": hinted_messages,
+            },
+            "hint_only": {
+                **common,
+                "information_view": f"hinter_reward_hint_only:{hint_hash}",
+                "messages": hint_only_messages,
             },
         }
-        if tool_schemas:
-            arguments["tools"] = list(tool_schemas)
-        response = self.client.chat.completions.create(**arguments)
-        message = response.choices[0].message
-        result: dict[str, Any] = {
-            "role": "assistant",
-            "content": message.content or "",
-        }
-        if message.tool_calls:
-            result["tool_calls"] = [
-                {
-                    "id": call.id,
-                    "type": "function",
-                    "function": {
-                        "name": call.function.name,
-                        "arguments": call.function.arguments,
-                    },
-                }
-                for call in message.tool_calls
-            ]
-        if not result["content"] and not result.get("tool_calls"):
-            raise ValueError("frozen Student produced an empty operation record")
-        return result
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            futures = {
+                name: executor.submit(self.target_builder.score_view, **arguments)
+                for name, arguments in requests.items()
+            }
+            views = {name: future.result() for name, future in futures.items()}
 
+        unhinted = views["unhinted"]
+        hinted = views["hinted"]
+        hint_only = views["hint_only"]
+        if not (
+            hinted.target_input_ids
+            == unhinted.target_input_ids
+            == hint_only.target_input_ids
+        ):
+            raise ValueError("all three standard-trajectory tokenizations must align")
 
-class BehaviorCopyingDiscriminator:
-    """Client for the same-size scalar-head discriminator service."""
-
-    def __init__(self, *, base_url: str, timeout: float = 120.0):
-        self.base_url = base_url.rstrip("/")
-        if not self.base_url:
-            raise ValueError("behavior discriminator URL is required")
-        self.timeout = timeout
-        self.session = requests.Session()
-        self.session.trust_env = False
-
-    def score_texts(self, texts: Sequence[str]) -> list[float]:
-        response = self.session.post(
-            self.base_url + "/score",
-            json={"inputs": list(texts)},
-            timeout=self.timeout,
+        p_logs = _actual_logprobs(unhinted)
+        q_logs = _actual_logprobs(hinted)
+        h_logs = _actual_logprobs(hint_only)
+        lifts = tuple(
+            _clip(q_value - p_value, self.token_clip)
+            for q_value, p_value in zip(q_logs, p_logs)
         )
-        response.raise_for_status()
-        scores = [float(value) for value in response.json()["scores"]]
-        if len(scores) != len(texts):
-            raise ValueError("discriminator server returned the wrong score count")
-        return scores
-
-    def copy_probability(
-        self,
-        *,
-        public_state: Any,
-        student_behavior: Any,
-        true_hint: str,
-        alternative_hints: Sequence[str],
-    ) -> float:
-        alternatives = [hint for hint in alternative_hints if hint != true_hint]
-        if not alternatives:
-            raise ValueError("copying penalty requires a same-state alternative hint")
-        texts = [
-            format_discriminator_input(
-                public_state=public_state,
-                student_behavior=student_behavior,
-                candidate_hint=hint,
-            )
-            for hint in [true_hint, *alternatives]
-        ]
-        scores = self.score_texts(texts)
-        return sum(
-            pairwise_copy_probability(scores[0], negative)
-            for negative in scores[1:]
-        ) / (len(scores) - 1)
+        copies = tuple(
+            max(0.0, _clip(h_value - p_value, self.token_clip))
+            for h_value, p_value in zip(h_logs, p_logs)
+        )
+        dose_kls = _coarse_token_kl(hinted, unhinted)
+        count = len(lifts)
+        trace = TeacherForcedProbabilityTrace(
+            state_hash=state_hash,
+            standard_action_hash=action_hash,
+            target_token_ids=hinted.target_input_ids,
+            unhinted_actual_logprobs=p_logs,
+            hinted_actual_logprobs=q_logs,
+            hint_only_actual_logprobs=h_logs,
+            token_lifts=lifts,
+            token_copies=copies,
+            token_dose_kls=dose_kls,
+        )
+        return TeacherForcedUsefulness(
+            unhinted_log_probability=sum(p_logs),
+            hinted_log_probability=sum(q_logs),
+            hint_only_log_probability=sum(h_logs),
+            mean_lift=sum(lifts) / count,
+            mean_copy=sum(copies) / count,
+            mean_dose_kl=sum(dose_kls) / count,
+            target_token_count=count,
+            probability_trace=trace,
+        )
 
 
 def validate_hinter_reward_row(row: Mapping[str, Any]) -> None:
-    required = (
-        "state_hash",
-        "public_state",
-        "student_visible_messages",
-    )
+    required = ("state_hash", "public_state", "student_visible_messages")
     missing = [field for field in required if field not in row]
     if missing:
         raise ValueError(f"hinter GRPO row is missing fields: {', '.join(missing)}")
@@ -386,17 +444,14 @@ def validate_hinter_reward_row(row: Mapping[str, Any]) -> None:
 
 
 class HinterCompositeReward(ORM):
-    """GRPO reward = teacher-forced usefulness - copying - token length."""
+    """mean lift - lambda*mean copy - nu*dose - mu*length."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.reward_config = HinterRewardConfig.from_env()
         self.infra = InfraConfig.from_env()
-        self.usefulness = TeacherForcedUsefulnessScorer(self.infra)
-        self.student_behavior = StudentMacroActionGenerator(self.infra)
-        self.discriminator = BehaviorCopyingDiscriminator(
-            base_url=os.getenv("COEVO_HINTER_DISCRIMINATOR_URL", ""),
-            timeout=float(os.getenv("COEVO_HINTER_DISCRIMINATOR_TIMEOUT", "120")),
+        self.usefulness = TeacherForcedUsefulnessScorer(
+            self.infra, token_clip=self.reward_config.token_clip
         )
         from transformers import AutoTokenizer
 
@@ -422,19 +477,12 @@ class HinterCompositeReward(ORM):
     @staticmethod
     def _item(kwargs: Mapping[str, Any], key: str, index: int, count: int) -> Any:
         value = kwargs.get(key)
-        if (
-            key == "privileged_context"
-            and isinstance(value, list)
-            and len(value) == count
-        ):
+        if key in {"privileged_context", "fact_audit_context"} and isinstance(
+            value, list
+        ) and len(value) == count:
             return value[index]
         if (
-            key
-            in {
-                "public_state",
-                "student_visible_messages",
-                "tools",
-            }
+            key in {"public_state", "student_visible_messages", "tools"}
             and isinstance(value, list)
             and value
             and isinstance(value[0], Mapping)
@@ -454,7 +502,7 @@ class HinterCompositeReward(ORM):
 
     def __call__(self, completions, **kwargs):
         count = len(completions)
-        candidates = []
+        rewards = []
         for index, completion in enumerate(completions):
             hint = self._hint_text(completion)
             row = {
@@ -465,101 +513,47 @@ class HinterCompositeReward(ORM):
                     "student_visible_messages",
                     "tools",
                     "privileged_context",
+                    "fact_audit_context",
                 )
             }
             validate_hinter_reward_row(row)
-            usefulness = self.usefulness.score(
+            signals = self.usefulness.score(
                 student_visible_messages=row["student_visible_messages"],
                 hint=hint,
                 state_hash=str(row["state_hash"]),
-                tool_schemas=row.get("tools") or [],
-            )
-            student_behavior = self.student_behavior.generate(
-                student_visible_messages=row["student_visible_messages"],
-                hint=hint,
                 tool_schemas=row.get("tools") or [],
             )
             hint_tokens = len(
                 self.hinter_tokenizer.encode(hint, add_special_tokens=False)
             )
             privileged = row.get("privileged_context")
-            leak_payload = {
-                "available_tools": row.get("tools") or [],
-                "authoritative_oracle_steps": (
-                    privileged.get("authoritative_oracle_steps")
-                    if isinstance(privileged, Mapping)
-                    else ""
-                ),
-                **(
-                    {
-                        key: privileged[key]
-                        for key in (
-                            "domain",
-                            "goal_object_locations",
-                            "destination_receptacle",
-                            "unobserved_states",
-                        )
-                        if key in privileged
-                    }
-                    if isinstance(privileged, Mapping)
-                    else {}
-                ),
-            }
+            audit_context = row.get("fact_audit_context")
+            leak_payload = (
+                dict(audit_context) if isinstance(audit_context, Mapping) else {}
+            )
+            leak_payload.setdefault("available_tools", row.get("tools") or [])
+            if isinstance(privileged, Mapping):
+                leak_payload.setdefault(
+                    "authoritative_oracle_steps",
+                    privileged.get("authoritative_oracle_steps", ""),
+                )
             rule_leaks = hint_fact_leaks(hint, leak_payload)
-            candidates.append(
+            breakdown = score_hinter_hint(
+                mean_lift=signals.mean_lift,
+                mean_copy=signals.mean_copy,
+                mean_dose_kl=signals.mean_dose_kl,
+                hint_tokens=hint_tokens,
+                config=self.reward_config,
+                rule_leaks=rule_leaks,
+            )
+            rewards.append(breakdown.reward)
+            self._record(
                 {
-                    "row": row,
+                    "state_hash": row["state_hash"],
+                    "public_state": row["public_state"],
                     "hint": hint,
-                    "usefulness": usefulness,
-                    "student_behavior": student_behavior,
-                    "hint_tokens": hint_tokens,
-                    "rule_leaks": rule_leaks,
+                    "signals": signals.to_dict(),
+                    "reward": breakdown.to_dict(),
                 }
             )
-
-        grouped: dict[str, list[int]] = {}
-        for index, candidate in enumerate(candidates):
-            grouped.setdefault(str(candidate["row"]["state_hash"]), []).append(index)
-
-        rewards = [0.0] * count
-        for state_hash, indexes in grouped.items():
-            group_hints = [str(candidates[index]["hint"]) for index in indexes]
-            if len(set(group_hints)) < 2:
-                for index in indexes:
-                    rewards[index] = 0.0
-                    self._record(
-                        {
-                            "state_hash": state_hash,
-                            "degenerate_group": True,
-                            "hint": candidates[index]["hint"],
-                        }
-                    )
-                continue
-            for index in indexes:
-                candidate = candidates[index]
-                copying = self.discriminator.copy_probability(
-                    public_state=candidate["row"]["public_state"],
-                    student_behavior=candidate["student_behavior"],
-                    true_hint=str(candidate["hint"]),
-                    alternative_hints=group_hints,
-                )
-                usefulness = candidate["usefulness"]
-                breakdown = score_hinter_hint(
-                    usefulness=usefulness.per_token_gain,
-                    copying_probability=copying,
-                    hint_tokens=int(candidate["hint_tokens"]),
-                    config=self.reward_config,
-                    rule_leaks=candidate["rule_leaks"],
-                )
-                rewards[index] = breakdown.reward
-                self._record(
-                    {
-                        "state_hash": candidate["row"]["state_hash"],
-                        "public_state": candidate["row"]["public_state"],
-                        "hint": candidate["hint"],
-                        "student_behavior": candidate["student_behavior"],
-                        "usefulness": usefulness.to_dict(),
-                        "reward": breakdown.to_dict(),
-                    }
-                )
         return rewards

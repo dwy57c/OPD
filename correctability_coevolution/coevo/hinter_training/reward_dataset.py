@@ -4,7 +4,11 @@ from dataclasses import asdict, dataclass
 from typing import Any, Iterable, Mapping
 
 from coevo.hints import HintLevel
-from coevo.hinter_prompt import HINTER_SYSTEM_PROMPT, build_hinter_messages
+from coevo.hinter_prompt import (
+    HINTER_SYSTEM_PROMPT,
+    build_hinter_messages,
+    narrow_privileged_context,
+)
 
 from .grpo_reward import validate_hinter_reward_row
 
@@ -18,9 +22,11 @@ class HinterGRPORow:
     state_hash: str
     public_state: Any
     privileged_context: Any
+    fact_audit_context: Any
     student_visible_messages: tuple[dict[str, Any], ...]
     tools: tuple[dict[str, Any], ...]
     standard_source_level: str
+    scenario_id: str
 
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)
@@ -69,17 +75,32 @@ def build_hinter_grpo_dataset(
             raise ValueError(
                 f"audited standard row is missing fields: {', '.join(missing)}"
             )
-        messages = build_hinter_messages(
-            source["public_state"], source["privileged_context"]
+        privileged_context = narrow_privileged_context(source["privileged_context"])
+        messages = build_hinter_messages(source["public_state"], privileged_context)
+        fact_audit_context = dict(source.get("fact_audit_context") or {})
+        fact_audit_context.setdefault("available_tools", source.get("tools") or [])
+        fact_audit_context.setdefault(
+            "authoritative_oracle_steps",
+            privileged_context["authoritative_oracle_steps"],
         )
+        for key in (
+            "domain",
+            "goal_object_locations",
+            "destination_receptacle",
+            "unobserved_states",
+        ):
+            if key in source:
+                fact_audit_context.setdefault(key, source[key])
         row = HinterGRPORow(
             messages=tuple(messages),
             state_hash=state_hash,
             public_state=source["public_state"],
-            privileged_context=source["privileged_context"],
+            privileged_context=privileged_context,
+            fact_audit_context=fact_audit_context,
             student_visible_messages=tuple(source["student_visible_messages"]),
             tools=tuple(source.get("tools") or []),
             standard_source_level=standard_level.value,
+            scenario_id=str(source.get("task_id") or source.get("state_id") or state_hash),
         )
         validate_hinter_reward_row(row.to_dict())
         result.append(row)

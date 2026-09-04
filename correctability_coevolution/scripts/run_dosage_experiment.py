@@ -87,6 +87,13 @@ def main() -> None:
         ],
     )
     parser.add_argument("--active-token-budget", type=int)
+    parser.add_argument(
+        "--target-operators",
+        nargs="+",
+        choices=["raw", "purified"],
+        default=["raw", "purified"],
+        help="Run source-contract and Purified-OPSD sink controls factorially.",
+    )
     parser.add_argument("--student-steps", type=int, default=100)
     parser.add_argument("--teacher-probe-k", type=int, default=8)
     parser.add_argument("--skip-teacher-probes", action="store_true")
@@ -139,40 +146,48 @@ def main() -> None:
 
     arms = []
     for level in args.levels:
-        for seed in args.seeds:
-            arm_dir = output_dir / level / f"seed_{seed}"
-            data_dir = arm_dir / "data"
-            env = dict(
-                base_env,
-                COEVO_HINT_LEVEL=level,
-                COEVO_SEED=str(seed),
-                COEVO_WANDB_RUN_NAME=f"dosage-{level}-seed-{seed}",
-            )
-            run(
-                [
-                    sys.executable,
-                    "scripts/relabel_hint_level.py",
-                    "--source-trajectories",
-                    str(state_pools[seed]),
-                    "--output-dir",
-                    str(data_dir),
-                    "--hint-level",
-                    level,
-                    "--no-sharpen-enabled",
-                ],
-                env,
-            )
-            dataset = data_dir / "student_gkd.jsonl"
-            arms.append(
-                {
-                    "level": level,
-                    "seed": seed,
-                    "arm_dir": arm_dir,
-                    "dataset": dataset,
-                    "available_active_tokens": token_count(dataset),
-                    "env": env,
-                }
-            )
+        for operator in args.target_operators:
+            for seed in args.seeds:
+                arm_dir = output_dir / level / operator / f"seed_{seed}"
+                data_dir = arm_dir / "data"
+                env = dict(
+                    base_env,
+                    COEVO_HINT_LEVEL=level,
+                    COEVO_TARGET_OPERATOR=operator,
+                    COEVO_TEACHER_TARGET_VERSION=(
+                        "purified-pmi-v1" if operator == "purified" else "hint-ladder-raw-v1"
+                    ),
+                    COEVO_SEED=str(seed),
+                    COEVO_WANDB_RUN_NAME=(
+                        f"dosage-{level}-{operator}-seed-{seed}"
+                    ),
+                )
+                run(
+                    [
+                        sys.executable,
+                        "scripts/relabel_hint_level.py",
+                        "--source-trajectories",
+                        str(state_pools[seed]),
+                        "--output-dir",
+                        str(data_dir),
+                        "--hint-level",
+                        level,
+                        "--no-sharpen-enabled",
+                    ],
+                    env,
+                )
+                dataset = data_dir / "student_gkd.jsonl"
+                arms.append(
+                    {
+                        "level": level,
+                        "target_operator": operator,
+                        "seed": seed,
+                        "arm_dir": arm_dir,
+                        "dataset": dataset,
+                        "available_active_tokens": token_count(dataset),
+                        "env": env,
+                    }
+                )
 
     budget = args.active_token_budget or min(
         arm["available_active_tokens"] for arm in arms
@@ -203,6 +218,8 @@ def main() -> None:
             "reason": "unhinted self-teacher is the base-checkpoint control",
         },
         "sharpen_enabled": False,
+        "target_operators": args.target_operators,
+        "purified_beta": float(base_env.get("COEVO_PURIFIED_BETA", "1.0")),
         "task_ids": args.task_ids,
         "seeds": args.seeds,
         "public_state_pools": {

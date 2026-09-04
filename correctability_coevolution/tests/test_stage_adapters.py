@@ -64,39 +64,3 @@ def test_real_stage_adapters_convert_fixture_artifacts(tmp_path):
     assert json.loads(checkpoint_output.read_text())["checkpoint"] == str(
         checkpoint.resolve()
     )
-
-    report = tmp_path / "discriminator_report.json"
-    control = {
-        "ordinary_pair_accuracy": 0.8,
-        "explicit_copy_accuracy": 1.0,
-        "explicit_copy_natural_accuracy": 0.9,
-        "useless_mean_distance_from_chance": 0.05,
-        "ordinary_pairs": 2,
-        "explicit_copy_pairs": 2,
-        "explicit_copy_natural_pairs": 2,
-        "useless_pairs": 2,
-        "initialized_from_student": "/student",
-        "fresh_score_head": True,
-    }
-    report.write_text(json.dumps(control), encoding="utf-8")
-    ordinary = tmp_path / "ordinary.jsonl"
-    ordinary.write_text('{"state_hash":"s"}\n', encoding="utf-8")
-    discriminator_output = tmp_path / "discriminator.json"
-    run_adapter(
-        "discriminator_result.py",
-        "--report",
-        report,
-        "--checkpoint",
-        checkpoint,
-        "--ordinary-pairs",
-        ordinary,
-        "--round-index",
-        3,
-        "--output",
-        discriminator_output,
-    )
-    result = json.loads(discriminator_output.read_text())
-    assert result["checkpoint"] == str(checkpoint.resolve())
-    assert result["round_index"] == 3
-    assert result["converged"] is True
-    assert result["control_report"]["explicit_copy_natural_accuracy"] == 0.9

@@ -15,7 +15,7 @@ def main() -> None:
     parser.add_argument("output", type=Path)
     parser.add_argument(
         "--standard-source-level",
-        choices=[level.value for level in HintLevel],
+        choices=[level.value for level in HintLevel if level is not HintLevel.HINTER],
         default=HintLevel.L3_ORACLE.value,
     )
     args = parser.parse_args()

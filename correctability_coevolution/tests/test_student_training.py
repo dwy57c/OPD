@@ -112,7 +112,7 @@ def training_row(action=None):
 def test_mixed_dataset_uses_per_sample_hint_level():
     row = training_row()
     row["hint_level"] = "MIXED"
-    row["sample_hint_level"] = "L2_PROCEDURAL"
+    row["sample_hint_level"] = "HINTER"
     validate_student_training_row(row)
 
     missing = training_row()

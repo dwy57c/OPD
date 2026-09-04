@@ -9,22 +9,16 @@ OUT=${2:?usage: train_hinter_grpo.sh DATA OUTPUT_DIR [STEPS]}
 STEPS=${3:-20}
 coevo_require_nonempty_file "$DATA"
 : "${COEVO_HINTER_BASE_MODEL:?COEVO_HINTER_BASE_MODEL is required}"
-: "${COEVO_HINTER_DISCRIMINATOR_URL:?COEVO_HINTER_DISCRIMINATOR_URL is required}"
 : "${COEVO_POLICY_PATH:?COEVO_POLICY_PATH is required}"
 export COEVO_TEACHER_HINT_MODE=none
 
 # The current Student endpoint is frozen throughout this GRPO call. Its
-# teacher-forced scorer supplies usefulness; pass@k is deliberately absent.
+# three teacher-forced views supply lift/copy/dose; pass@k stays out of reward.
 python "$COEVO_ROOT/scripts/wait_for_servers.py" \
   "${COEVO_POLICY_URL:-http://127.0.0.1:${COEVO_POLICY_PORT:-8000}}" \
   --timeout 30 \
   --model "${COEVO_POLICY_MODEL:-Qwen3-4B}"
-python "$COEVO_ROOT/scripts/wait_for_servers.py" \
-  "$COEVO_HINTER_DISCRIMINATOR_URL" \
-  --timeout 30 \
-  --health-path /health
-
-TRAIN_GPUS=${COEVO_HINTER_TRAIN_GPUS:-0}
+TRAIN_GPUS=${COEVO_HINTER_TRAIN_GPUS:-2,3,4,5,6,7}
 IFS=, read -r -a TRAIN_GPU_IDS <<< "$TRAIN_GPUS"
 NPROC=${COEVO_HINTER_TRAIN_NPROC:-${#TRAIN_GPU_IDS[@]}}
 HINTER_TUNER_TYPE=${COEVO_HINTER_TUNER_TYPE:-full}

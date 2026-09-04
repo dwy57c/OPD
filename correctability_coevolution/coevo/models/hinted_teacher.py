@@ -26,9 +26,14 @@ from coevo.hints import (
     HintLevel,
     hint_instruction,
     prepare_hint_payload,
+    validate_emergent_hint_note,
     validate_hint_note,
 )
-from coevo.hinter_prompt import build_hinter_messages
+from coevo.hinter_prompt import (
+    build_hinter_messages,
+    narrow_privileged_context,
+    self_reported_hint_level,
+)
 
 
 # Compatibility export for callers that benchmark the historical full-oracle dose.
@@ -42,6 +47,7 @@ class TeacherHintResult:
     latency_ms: int
     sha256: str
     level: str = HintLevel.L3_ORACLE.value
+    reported_level: str | None = None
     error: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -163,6 +169,7 @@ class ClosedModelTeacherHinter:
         if parsed_level is HintLevel.L0_NONE:
             raise ValueError("L0 must bypass the hinter API")
         request_payload = prepare_hint_payload(payload, parsed_level)
+        validation_payload = {**payload, "hint_level": parsed_level.value}
         started = time.monotonic()
         last_error = None
         correction = ""
@@ -193,7 +200,7 @@ class ClosedModelTeacherHinter:
                     max_tokens=self.endpoint.max_tokens,
                 )
                 plan = (response.choices[0].message.content or "").strip()
-                validate_hint_note(plan, request_payload, parsed_level)
+                validate_hint_note(plan, validation_payload, parsed_level)
                 hint = {"plan": plan}
                 canonical = json.dumps(
                     {"level": parsed_level.value, "hint": hint},
@@ -207,6 +214,7 @@ class ClosedModelTeacherHinter:
                     latency_ms=round((time.monotonic() - started) * 1000),
                     sha256=hashlib.sha256(canonical.encode()).hexdigest()[:16],
                     level=parsed_level.value,
+                    reported_level=self_reported_hint_level(plan),
                 )
             except Exception as error:
                 last_error = error
@@ -251,13 +259,8 @@ class OpenModelTeacherHinter(ClosedModelTeacherHinter):
         parsed_level = HintLevel.parse(level)
         if parsed_level is HintLevel.L0_NONE:
             raise ValueError("L0 must bypass the hinter API")
-        prepared = prepare_hint_payload(payload, parsed_level)
-        public_state = prepared.get("current_history") or []
-        privileged_context = {
-            key: value
-            for key, value in prepared.items()
-            if key != "current_history"
-        }
+        public_state = payload.get("current_history") or payload.get("public_state") or []
+        privileged_context = narrow_privileged_context(payload)
         messages = build_hinter_messages(public_state, privileged_context)
         started = time.monotonic()
         last_error = None
@@ -282,10 +285,10 @@ class OpenModelTeacherHinter(ClosedModelTeacherHinter):
                     max_tokens=self.endpoint.max_tokens,
                 )
                 plan = (response.choices[0].message.content or "").strip()
-                validate_hint_note(plan, prepared, parsed_level)
+                validate_emergent_hint_note(plan, payload)
                 hint = {"plan": plan}
                 canonical = json.dumps(
-                    {"level": parsed_level.value, "hint": hint},
+                    {"level": HintLevel.HINTER.value, "hint": hint},
                     ensure_ascii=False,
                     sort_keys=True,
                     separators=(",", ":"),
@@ -295,7 +298,8 @@ class OpenModelTeacherHinter(ClosedModelTeacherHinter):
                     model=self.endpoint.model,
                     latency_ms=round((time.monotonic() - started) * 1000),
                     sha256=hashlib.sha256(canonical.encode()).hexdigest()[:16],
-                    level=parsed_level.value,
+                    level=HintLevel.HINTER.value,
+                    reported_level=self_reported_hint_level(plan),
                 )
             except Exception as error:
                 last_error = error
@@ -314,7 +318,7 @@ class OpenModelTeacherHinter(ClosedModelTeacherHinter):
             "attempts": self.endpoint.retries,
         }
         canonical = json.dumps(
-            {"level": parsed_level.value, "hint": {}, "error": error_payload},
+            {"level": HintLevel.HINTER.value, "hint": {}, "error": error_payload},
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
@@ -324,7 +328,7 @@ class OpenModelTeacherHinter(ClosedModelTeacherHinter):
             model=self.endpoint.model,
             latency_ms=round((time.monotonic() - started) * 1000),
             sha256=hashlib.sha256(canonical.encode()).hexdigest()[:16],
-            level=parsed_level.value,
+            level=HintLevel.HINTER.value,
             error=error_payload,
         )
 

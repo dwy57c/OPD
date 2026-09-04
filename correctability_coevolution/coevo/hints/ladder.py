@@ -12,9 +12,12 @@ class HintLevel(str, Enum):
     L1_POLICY = "L1_POLICY"
     L2_PROCEDURAL = "L2_PROCEDURAL"
     L3_ORACLE = "L3_ORACLE"
+    HINTER = "HINTER"
 
     @property
     def dose(self) -> int:
+        if self is HintLevel.HINTER:
+            raise ValueError("emergent HINTER output has no fixed dose")
         return HINT_LEVELS.index(self)
 
     @classmethod
@@ -31,6 +34,7 @@ class HintLevel(str, Enum):
             "PROCEDURAL": cls.L2_PROCEDURAL,
             "L3": cls.L3_ORACLE,
             "ORACLE": cls.L3_ORACLE,
+            "HINTER": cls.HINTER,
         }
         if normalized in aliases:
             return aliases[normalized]
@@ -93,29 +97,16 @@ not mention any object, location, or route specific to this task.
     elif parsed is HintLevel.L2_PROCEDURAL:
         task = """
 Write a concise private procedural note that helps the agent choose its next
-turn. You are given privileged resolution information. Your job is to convert
-it into a procedure that an agent WITHOUT that information could follow to
-discover the same facts by observation.
-
-Hard rules for instance facts:
-
-- Never state one, in any form. Hedged forms count as stating it: "the most
-  plausible spot", "likely", "usually here", and "start with X" all reveal the
-  fact when X is the true answer.
-- Never order candidate locations or candidate objects using the privileged
-  information. If you list candidates, list the generic kinds of places such an
-  object is usually kept, in no particular order, and tell the agent to check
-  them one at a time and confirm by observation before acting.
-- Never let the procedure be shorter than what an uninformed agent would need:
-  if the true answer would be found on the first try only because you knew it,
-  the note has leaked.
-
-You may state task-derivable steps, including what must happen to the object
-before the goal is met, the kind of appliance or receptacle that does it, and
-the destination class if the goal names it. End with a confirmation or safety
-guardrail. Usually 40-100 words.
+turn. You receive only the public state and goal. Give an unbiased procedure
+for acquiring whatever evidence is missing, checking candidates without a
+privileged ordering, and confirming observations before committing. You may
+state task-derivable steps, including what must happen to an object before the
+goal is met and the general kind of appliance or receptacle that performs it.
+Prefer referring to all available candidates collectively over giving an
+incomplete candidate list. End with a confirmation or safety guardrail.
+Usually 40-100 words.
 """.strip()
-    else:
+    elif parsed is HintLevel.L3_ORACLE:
         task = """
 Write a short private decision note that helps the agent choose its next turn.
 You are given privileged resolution information and you MUST use it explicitly:
@@ -125,6 +116,8 @@ natural-language facts. Then say what the efficient next move is and why. Do
 not withhold a fact for the agent to "discover"; that is a different dose
 level. Do not restate the oracle steps mechanically. Usually 60-140 words.
 """.strip()
+    else:
+        raise ValueError("HINTER uses the emergent prompt, not a fixed ladder prompt")
     return f"{task}\n\n{domain_facts}\n\n{_SHARED_CONTRACT}"
 
 
@@ -153,6 +146,10 @@ _IDENTIFIER = re.compile(
     r"(?=[A-Z0-9-]*\d[A-Z0-9-]*\b)[A-Z0-9][A-Z0-9-]{3,}\b)",
     re.IGNORECASE,
 )
+_CAPS_IDENTIFIER = re.compile(
+    r"\b(?=[A-Z0-9-]{5,}\b)(?=[A-Z0-9-]*[A-Z])(?=[A-Z0-9-]*\d)"
+    r"[A-Z0-9]+(?:-[A-Z0-9]+)*\b"
+)
 
 
 def prepare_hint_payload(
@@ -173,6 +170,21 @@ def prepare_hint_payload(
             "unobserved_states",
         ):
             result.pop(key, None)
+    elif parsed is HintLevel.L2_PROCEDURAL:
+        public_keys = (
+            "domain",
+            "task",
+            "goal",
+            "task_goal",
+            "current_history",
+            "public_state",
+        )
+        result = {
+            key: payload[key]
+            for key in public_keys
+            if key in payload
+        }
+        result["hint_level"] = parsed.value
     return result
 
 
@@ -309,7 +321,7 @@ def hint_fact_leaks(plan: str, payload: Mapping[str, Any]) -> tuple[str, ...]:
         findings.append("date")
     if _AMOUNT.search(plan):
         findings.append("amount")
-    if _IDENTIFIER.search(plan):
+    if _IDENTIFIER.search(plan) or _CAPS_IDENTIFIER.search(plan):
         findings.append("identifier")
     for name in _payload_tool_names(payload):
         if re.search(rf"(?<!\w){re.escape(name)}(?!\w)", plan):
@@ -348,6 +360,8 @@ def validate_hint_note(
         raise ValueError("L2 procedural hint must not exceed 100 words")
     if parsed is HintLevel.L3_ORACLE and len(words) > 140:
         raise ValueError("L3 oracle hint must not exceed 140 words")
+    if parsed is HintLevel.HINTER and len(words) > 140:
+        raise ValueError("emergent hinter note must not exceed 140 words")
     if "```" in plan or plan.lstrip().startswith(("{", "[")):
         raise ValueError("closed-model hinter returned structured output")
     lines = [line.strip() for line in plan.splitlines() if line.strip()]
@@ -360,7 +374,11 @@ def validate_hint_note(
                 f"closed-model hinter copied an exact tool name: {name}"
             )
 
-    if parsed in {HintLevel.L1_POLICY, HintLevel.L2_PROCEDURAL}:
+    if parsed in {
+        HintLevel.L1_POLICY,
+        HintLevel.L2_PROCEDURAL,
+        HintLevel.HINTER,
+    }:
         findings = tuple(
             finding
             for finding in hint_fact_leaks(plan, payload)
@@ -391,3 +409,16 @@ def validate_hint_note(
                 "L3_ORACLE hint omitted required structured fact: "
                 f"{missing[0]}"
             )
+    if (
+        parsed is HintLevel.L3_ORACLE
+        and _domain_key(payload.get("domain")) == "tau2"
+        and _oracle_literals(payload)
+        and not hint_fact_leaks(plan, payload)
+    ):
+        raise ValueError("L3_ORACLE hint did not explicitly state an oracle fact")
+
+
+def validate_emergent_hint_note(plan: str, payload: Mapping[str, Any]) -> None:
+    """Unlevelled open-hinter gate: format, tool names, facts, and 140 words."""
+
+    validate_hint_note(plan, payload, HintLevel.HINTER)

@@ -1,4 +1,5 @@
 from .hstar import (
+    classify_hinter_reachability,
     HStarDecision,
     ProbeResult,
     ScenarioBand,
@@ -12,6 +13,7 @@ __all__ = [
     "ProbeResult",
     "ScenarioBand",
     "curriculum_weights",
+    "classify_hinter_reachability",
     "minimal_sufficient_level",
     "probe_scenario",
 ]

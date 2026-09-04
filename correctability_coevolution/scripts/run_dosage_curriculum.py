@@ -6,6 +6,7 @@ import random
 
 from coevo.config import InfraConfig
 from coevo.curriculum import (
+    classify_hinter_reachability,
     curriculum_weights,
     minimal_sufficient_level,
     probe_scenario,
@@ -33,16 +34,33 @@ def main() -> None:
     decisions = {}
     rng = random.Random(config.seed)
     for task_id in args.task_ids:
+        emergent = config.hint_level is HintLevel.HINTER
+        probe_levels = (
+            (HintLevel.L0_NONE, HintLevel.HINTER) if emergent else HINT_LEVELS
+        )
         task_probes = {
             level: probe_scenario(config, str(task_id), level, args.k)
-            for level in HINT_LEVELS
+            for level in probe_levels
         }
         probes[str(task_id)] = {
             level.value: result.to_dict() for level, result in task_probes.items()
         }
-        decision = minimal_sufficient_level(
-            task_probes, sufficient=args.sufficient, near_zero=args.near_zero
+        decision = (
+            classify_hinter_reachability(
+                task_probes[HintLevel.L0_NONE],
+                task_probes[HintLevel.HINTER],
+                sufficient=args.sufficient,
+                near_zero=args.near_zero,
+            )
+            if emergent
+            else minimal_sufficient_level(
+                task_probes,
+                sufficient=args.sufficient,
+                near_zero=args.near_zero,
+            )
         )
+        if emergent and args.policy != "hstar":
+            parser.error("fixed/random dose baselines require the closed fixed ladder")
         if args.policy.startswith("fixed:"):
             fixed = HintLevel.parse(args.policy.split(":", 1)[1])
             decision = type(decision)(

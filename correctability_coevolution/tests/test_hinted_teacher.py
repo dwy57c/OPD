@@ -1,3 +1,5 @@
+import pytest
+
 from tau2.data_model.message import AssistantMessage, UserMessage
 from tau2.run import get_tasks
 
@@ -12,7 +14,7 @@ from coevo.models.hinted_teacher import (
     format_teacher_system_prompt_with_hint,
 )
 from types import SimpleNamespace
-from coevo.hinter_prompt import build_hinter_messages
+from coevo.hinter_prompt import build_hinter_messages, narrow_privileged_context
 
 
 class FakeHinter:
@@ -283,11 +285,24 @@ def test_open_hinter_uses_the_same_prompt_builder_as_grpo():
         "current_history": [{"role": "user", "content": "help"}],
     }
     result = hinter.hint(payload, "L3_ORACLE")
-    expected_privileged = {
-        **{key: value for key, value in payload.items() if key != "current_history"},
-        "hint_level": "L3_ORACLE",
-    }
+    expected_privileged = narrow_privileged_context(payload)
     assert calls[0]["messages"] == build_hinter_messages(
         payload["current_history"], expected_privileged
     )
     assert result.error is None
+    assert result.level == "HINTER"
+
+
+def test_open_hinter_privileged_context_has_exact_keys():
+    payload = {
+        "domain_policy": "policy",
+        "authoritative_oracle_steps": "private",
+        "task_id": "not exposed",
+        "available_tools": ["not exposed"],
+    }
+    assert set(narrow_privileged_context(payload)) == {
+        "domain_policy",
+        "authoritative_oracle_steps",
+    }
+    with pytest.raises(ValueError, match="keys must be exactly"):
+        build_hinter_messages([], {**narrow_privileged_context(payload), "extra": 1})

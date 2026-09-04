@@ -1,16 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from typing import Any, Callable, Mapping, Sequence
-
-from coevo.artifacts import canonical_hash
-
-from .behavior_discriminator import DiscriminatorControlReport, DiscriminatorGate
-from .discriminator_data import (
-    BehaviorHintSample,
-    CopyingDiscriminatorPair,
-    build_fresh_discriminator_pairs,
-)
+from typing import Any, Callable, Mapping
 
 
 @dataclass(frozen=True)
@@ -34,7 +25,7 @@ class PassKSnapshot:
 
 @dataclass(frozen=True)
 class AcceptanceRule:
-    """Statistically calibrated rollback for the pass@k panel."""
+    """Statistically calibrated rollback for the fixed pass@k panel."""
 
     mean_tolerance: float | None = None
     mean_std_multiplier: float = 1.65
@@ -76,43 +67,9 @@ class AcceptanceRule:
         fraction = len(regressed) / len(baseline.scores)
         if fraction > self.max_regressed_fraction:
             failures.append(
-                f"scenario_fraction:{fraction:.2f}>"
-                f"{self.max_regressed_fraction:.2f}"
+                f"scenario_fraction:{fraction:.2f}>{self.max_regressed_fraction:.2f}"
             )
         return tuple(failures)
-
-
-@dataclass(frozen=True)
-class DiscriminatorUpdate:
-    checkpoint: str
-    round_index: int
-    training_examples: int
-    training_fingerprint: str
-    converged: bool
-    control_report: DiscriminatorControlReport
-    initialized_from_student: bool = True
-    fresh_score_head: bool = True
-
-    def __post_init__(self) -> None:
-        if (
-            not self.checkpoint
-            or self.training_examples < 1
-            or not self.training_fingerprint
-        ):
-            raise ValueError("discriminator update must identify a trained checkpoint")
-
-
-@dataclass(frozen=True)
-class IndependentAuditResult:
-    checkpoint: str
-    control_report: DiscriminatorControlReport
-    agreement_with_training_discriminator: float
-
-    def __post_init__(self) -> None:
-        if not self.checkpoint:
-            raise ValueError("independent auditor must identify its checkpoint")
-        if not 0 <= self.agreement_with_training_discriminator <= 1:
-            raise ValueError("independent-auditor agreement must be in [0, 1]")
 
 
 @dataclass(frozen=True)
@@ -125,10 +82,6 @@ class AlternatingRoundResult:
     fallback_hinter: str
     accepted_hinter: str
     next_hinter_candidate: str
-    discriminator_after: str
-    discriminator_control_report: DiscriminatorControlReport
-    independent_auditor_checkpoint: str | None
-    independent_auditor_agreement: float | None
     student_steps: int
     hinter_grpo_steps: int
     curriculum_scenarios: tuple[str, ...]
@@ -137,8 +90,6 @@ class AlternatingRoundResult:
     measured_distillation_gain: float | None
     prior_hinter_rolled_back: bool
     rollback_reasons: tuple[str, ...]
-    fresh_discriminator_samples: int
-    discriminator_training_examples: int
     pass_measurements_this_round: int = 1
 
     def to_dict(self) -> dict[str, Any]:
@@ -151,20 +102,11 @@ class AlternatingRoundResult:
             else None
         )
         value["rollback_reasons"] = list(self.rollback_reasons)
-        value["discriminator_control_report"] = (
-            self.discriminator_control_report.to_dict()
-        )
         return value
 
 
 class AlternatingHinterLoop:
-    """One pass@k measurement, used for both acceptance and scheduling.
-
-    The hinter produced at the end of round t is tested by the Student update at
-    the start of round t+1. The post-Student pass@k measurement is therefore a
-    real distillation outcome, not a reward proxy. GRPO receives only the local
-    usefulness/copying/length reward registered in ``grpo_reward.py``.
-    """
+    """Student segment, one pass@k fuse, then analytical-reward hinter GRPO."""
 
     def __init__(
         self,
@@ -174,43 +116,18 @@ class AlternatingHinterLoop:
         schedule_curriculum: Callable[
             [PassKSnapshot, Mapping[str, Any]], Mapping[str, Any]
         ],
-        collect_fresh_discriminator_samples: Callable[
-            [str, str, Mapping[str, Any]], Sequence[BehaviorHintSample]
-        ],
-        retrain_discriminator: Callable[
-            [Sequence[CopyingDiscriminatorPair], int], DiscriminatorUpdate
-        ],
-        train_independent_auditor: Callable[
-            [Sequence[CopyingDiscriminatorPair], str, int], IndependentAuditResult
-        ]
-        | None,
-        train_hinter_grpo: Callable[
-            [str, str, str, Mapping[str, Any], int], str
-        ],
+        train_hinter_grpo: Callable[[str, str, Mapping[str, Any], int], str],
         rollback_student: Callable[[str, str], None],
         rollback_hinter: Callable[[str, str], None],
         acceptance: AcceptanceRule | None = None,
-        discriminator_gate: DiscriminatorGate | None = None,
-        independent_audit_interval: int = 3,
-        minimum_independent_agreement: float = 0.8,
     ):
-        if independent_audit_interval < 1:
-            raise ValueError("independent_audit_interval must be positive")
         self.train_student = train_student
         self.measure_pass_at_k = measure_pass_at_k
         self.schedule_curriculum = schedule_curriculum
-        self.collect_fresh_discriminator_samples = (
-            collect_fresh_discriminator_samples
-        )
-        self.retrain_discriminator = retrain_discriminator
-        self.train_independent_auditor = train_independent_auditor
         self.train_hinter_grpo = train_hinter_grpo
         self.rollback_student = rollback_student
         self.rollback_hinter = rollback_hinter
         self.acceptance = acceptance or AcceptanceRule()
-        self.discriminator_gate = discriminator_gate or DiscriminatorGate()
-        self.independent_audit_interval = independent_audit_interval
-        self.minimum_independent_agreement = minimum_independent_agreement
 
     def run_round(
         self,
@@ -233,9 +150,7 @@ class AlternatingHinterLoop:
         student_candidate = self.train_student(
             student_checkpoint, hinter_under_test, student_steps
         )
-        measured = self.measure_pass_at_k(
-            student_candidate, scenario_pool, pass_k
-        )
+        measured = self.measure_pass_at_k(student_candidate, scenario_pool, pass_k)
         regressions = (
             self.acceptance.regressions(acceptance_baseline, measured)
             if acceptance_baseline is not None
@@ -250,9 +165,7 @@ class AlternatingHinterLoop:
         rolled_back = bool(regressions)
         if rolled_back:
             self.rollback_student(student_candidate, student_checkpoint)
-            self.rollback_hinter(
-                hinter_under_test, fallback_hinter_checkpoint
-            )
+            self.rollback_hinter(hinter_under_test, fallback_hinter_checkpoint)
             student_after = student_checkpoint
             accepted_hinter = fallback_hinter_checkpoint
             scheduling_snapshot = acceptance_baseline
@@ -261,66 +174,12 @@ class AlternatingHinterLoop:
             accepted_hinter = hinter_under_test
             scheduling_snapshot = measured
 
-        curriculum = self.schedule_curriculum(
-            scheduling_snapshot, scenario_pool
-        )
+        curriculum = self.schedule_curriculum(scheduling_snapshot, scenario_pool)
         if not curriculum:
             raise ValueError("pass@k curriculum selected no scenarios")
-
-        fresh_samples = tuple(
-            self.collect_fresh_discriminator_samples(
-                student_after, accepted_hinter, curriculum
-            )
-        )
-        if not fresh_samples:
-            raise ValueError("each round must retrain the discriminator on fresh samples")
-        discriminator_examples = tuple(
-            build_fresh_discriminator_pairs(
-                fresh_samples, seed=round_index
-            )
-        )
-        discriminator_update = self.retrain_discriminator(
-            discriminator_examples, round_index
-        )
-        expected_discriminator_fingerprint = canonical_hash(
-            [example.to_dict() for example in discriminator_examples]
-        )
-        if (
-            not discriminator_update.converged
-            or discriminator_update.round_index != round_index
-            or discriminator_update.training_examples != len(discriminator_examples)
-            or discriminator_update.training_fingerprint
-            != expected_discriminator_fingerprint
-            or not discriminator_update.initialized_from_student
-            or not discriminator_update.fresh_score_head
-        ):
-            raise ValueError(
-                "discriminator must be freshly retrained to convergence on this round"
-            )
-        self.discriminator_gate.validate(discriminator_update.control_report)
-        discriminator_after = discriminator_update.checkpoint
-        independent_audit = None
-        if round_index % self.independent_audit_interval == 0:
-            if self.train_independent_auditor is None:
-                raise ValueError(
-                    "this round requires an independently initialized discriminator audit"
-                )
-            independent_audit = self.train_independent_auditor(
-                discriminator_examples, discriminator_after, round_index
-            )
-            if independent_audit.checkpoint == discriminator_after:
-                raise ValueError("independent auditor reused the training discriminator")
-            self.discriminator_gate.validate(independent_audit.control_report)
-            if (
-                independent_audit.agreement_with_training_discriminator
-                < self.minimum_independent_agreement
-            ):
-                raise ValueError("independent auditor disagrees with copying penalties")
-
         next_hinter_candidate = self.train_hinter_grpo(
             student_after,
             accepted_hinter,
-            discriminator_after,
             curriculum,
             hinter_grpo_steps,
         )
@@ -336,16 +195,6 @@ class AlternatingHinterLoop:
             fallback_hinter=fallback_hinter_checkpoint,
             accepted_hinter=accepted_hinter,
             next_hinter_candidate=next_hinter_candidate,
-            discriminator_after=discriminator_after,
-            discriminator_control_report=discriminator_update.control_report,
-            independent_auditor_checkpoint=(
-                independent_audit.checkpoint if independent_audit else None
-            ),
-            independent_auditor_agreement=(
-                independent_audit.agreement_with_training_discriminator
-                if independent_audit
-                else None
-            ),
             student_steps=student_steps,
             hinter_grpo_steps=hinter_grpo_steps,
             curriculum_scenarios=tuple(str(value) for value in curriculum),
@@ -354,6 +203,4 @@ class AlternatingHinterLoop:
             measured_distillation_gain=measured_gain,
             prior_hinter_rolled_back=rolled_back,
             rollback_reasons=regressions,
-            fresh_discriminator_samples=len(fresh_samples),
-            discriminator_training_examples=len(discriminator_examples),
         )

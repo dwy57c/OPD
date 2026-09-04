@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from coevo.curriculum import (
     ScenarioBand,
+    classify_hinter_reachability,
     curriculum_weights,
     minimal_sufficient_level,
     probe_scenario,
@@ -35,6 +36,14 @@ def test_hstar_selects_smallest_sufficient_level_and_quadrant():
     mastered = minimal_sufficient_level(scores(0.8, 0.8, 0.9, 1.0), sufficient=0.7)
     assert mastered.level is HintLevel.L0_NONE
     assert mastered.band is ScenarioBand.MASTERED
+
+
+def test_emergent_hinter_sensor_classifies_without_assigning_fixed_dose():
+    decision = classify_hinter_reachability(0.2, 0.8, sufficient=0.7)
+    assert decision.level is HintLevel.HINTER
+    assert decision.band is ScenarioBand.FRONTIER
+    mastered = classify_hinter_reachability(0.8, 0.9, sufficient=0.7)
+    assert mastered.level is HintLevel.L0_NONE
 
 
 def test_hstar_marks_nonmonotonic_measurements_and_scheduler_normalizes():

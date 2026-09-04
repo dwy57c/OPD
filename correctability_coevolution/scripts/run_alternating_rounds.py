@@ -8,10 +8,6 @@ from typing import Any
 
 from coevo.hinter_training import (
     AlternatingHinterLoop,
-    BehaviorHintSample,
-    DiscriminatorControlReport,
-    DiscriminatorUpdate,
-    IndependentAuditResult,
     PassKSnapshot,
 )
 
@@ -35,9 +31,6 @@ class SubprocessRoundBackend:
         "train_student",
         "measure_pass_at_k",
         "schedule_curriculum",
-        "collect_discriminator_samples",
-        "retrain_discriminator",
-        "train_independent_auditor",
         "train_hinter_grpo",
         "rollback_student",
         "rollback_hinter",
@@ -126,85 +119,20 @@ class SubprocessRoundBackend:
             raise ValueError(f"scheduler selected unknown scenarios: {missing}")
         return {value: pool[value] for value in selected}
 
-    def collect_discriminator_samples(
-        self, student: str, hinter: str, curriculum: dict
-    ) -> list[BehaviorHintSample]:
+    def train_hinter_grpo(
+        self, student: str, hinter: str, curriculum: dict, steps: int
+    ) -> str:
         self.context["current_student"] = student
         self.context["current_hinter"] = hinter
         curriculum_path = self.round_dir / "selected_scenarios.json"
         write_json(curriculum_path, curriculum)
-        output = self.round_dir / "fresh_discriminator_samples.jsonl"
-        self._run(
-            "collect_discriminator_samples",
-            {
-                "student": student,
-                "hinter": hinter,
-                "curriculum": str(curriculum_path),
-            },
-            output,
-            parse_json=False,
-        )
-        return [
-            BehaviorHintSample(**json.loads(line))
-            for line in output.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
-
-    @staticmethod
-    def _control_report(value: dict) -> DiscriminatorControlReport:
-        return DiscriminatorControlReport(**value)
-
-    def retrain_discriminator(self, pairs, round_index: int) -> DiscriminatorUpdate:
-        pairs_path = self.round_dir / "discriminator_pairs.jsonl"
-        pairs_path.write_text(
-            "".join(json.dumps(value.to_dict(), ensure_ascii=False) + "\n" for value in pairs),
-            encoding="utf-8",
-        )
-        output = self.round_dir / "discriminator_update.json"
-        result = self._run(
-            "retrain_discriminator",
-            {"pairs": str(pairs_path), "round": round_index},
-            output,
-        )
-        return DiscriminatorUpdate(
-            checkpoint=str(result["checkpoint"]),
-            round_index=int(result["round_index"]),
-            training_examples=int(result["training_examples"]),
-            training_fingerprint=str(result["training_fingerprint"]),
-            converged=bool(result["converged"]),
-            control_report=self._control_report(result["control_report"]),
-            initialized_from_student=bool(result["initialized_from_student"]),
-            fresh_score_head=bool(result["fresh_score_head"]),
-        )
-
-    def train_independent_auditor(self, pairs, active: str, round_index: int):
-        pairs_path = self.round_dir / "discriminator_pairs.jsonl"
-        output = self.round_dir / "independent_auditor.json"
-        result = self._run(
-            "train_independent_auditor",
-            {
-                "active_discriminator": active,
-                "pairs": str(pairs_path),
-                "round": round_index,
-            },
-            output,
-        )
-        return IndependentAuditResult(
-            checkpoint=str(result["checkpoint"]),
-            control_report=self._control_report(result["control_report"]),
-            agreement_with_training_discriminator=float(result["agreement"]),
-        )
-
-    def train_hinter_grpo(
-        self, student: str, hinter: str, discriminator: str, curriculum: dict, steps: int
-    ) -> str:
         output = self.round_dir / "hinter_update.json"
         result = self._run(
             "train_hinter_grpo",
             {
                 "student": student,
                 "hinter": hinter,
-                "discriminator": discriminator,
+                "curriculum": str(curriculum_path),
                 "hinter_steps": steps,
             },
             output,
@@ -280,9 +208,6 @@ def main() -> None:
             train_student=backend.train_student,
             measure_pass_at_k=backend.measure_pass_at_k,
             schedule_curriculum=backend.schedule_curriculum,
-            collect_fresh_discriminator_samples=backend.collect_discriminator_samples,
-            retrain_discriminator=backend.retrain_discriminator,
-            train_independent_auditor=backend.train_independent_auditor,
             train_hinter_grpo=backend.train_hinter_grpo,
             rollback_student=backend.rollback_student,
             rollback_hinter=backend.rollback_hinter,

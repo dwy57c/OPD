@@ -2,12 +2,12 @@
   "train_student": [
     "bash",
     "-lc",
-    "COEVO_TEACHER_HINT_MODE=open_hinter COEVO_TEACHER_HINT_URL=\"$COEVO_HINTER_URL\" COEVO_TEACHER_HINT_MODEL=\"$COEVO_HINTER_MODEL\" python scripts/collect_dosage_curriculum.py --manifest \"{curriculum_manifest}\" --source-trajectories \"{source_trajectories}\" --output-dir \"{round_dir}/student_data\" --samples \"${COEVO_ALTERNATING_SAMPLES:-100}\" && COEVO_POLICY_BASE_MODEL=\"{student}\" bash scripts/train_student_full.sh \"{round_dir}/student_data/student_gkd.jsonl\" \"{round_dir}/student\" {student_steps} && python scripts/stages/checkpoint_result.py --checkpoint-root \"{round_dir}/student\" --refresh-role policy --output \"{output}\""
+    "COEVO_HINT_LEVEL=HINTER COEVO_TEACHER_HINT_MODE=open_hinter COEVO_TEACHER_HINT_URL=\"$COEVO_HINTER_URL\" COEVO_TEACHER_HINT_MODEL=\"$COEVO_HINTER_MODEL\" COEVO_TEACHER_HINT_API_KEY=\"${COEVO_HINTER_API_KEY:-EMPTY}\" python scripts/collect_dosage_curriculum.py --manifest \"{curriculum_manifest}\" --source-trajectories \"{source_trajectories}\" --output-dir \"{round_dir}/student_data\" --samples \"${COEVO_ALTERNATING_SAMPLES:-100}\" && COEVO_POLICY_BASE_MODEL=\"{student}\" bash scripts/train_student_full.sh \"{round_dir}/student_data/student_gkd.jsonl\" \"{round_dir}/student\" {student_steps} && python scripts/stages/checkpoint_result.py --checkpoint-root \"{round_dir}/student\" --refresh-role policy --output \"{output}\""
   ],
   "measure_pass_at_k": [
     "bash",
     "-lc",
-    "python scripts/run_dosage_curriculum.py --output-dir \"{round_dir}/dosage\" --task-ids $COEVO_ALTERNATING_TASK_IDS --k {pass_k} --policy hstar && python scripts/stages/probe_result.py --manifest \"{round_dir}/dosage/dosage_manifest.json\" --output \"{output}\""
+    "COEVO_HINT_LEVEL=HINTER COEVO_TEACHER_HINT_MODE=open_hinter COEVO_TEACHER_HINT_URL=\"$COEVO_HINTER_URL\" COEVO_TEACHER_HINT_MODEL=\"$COEVO_HINTER_MODEL\" COEVO_TEACHER_HINT_API_KEY=\"${COEVO_HINTER_API_KEY:-EMPTY}\" python scripts/run_dosage_curriculum.py --output-dir \"{round_dir}/dosage\" --task-ids $COEVO_ALTERNATING_TASK_IDS --k {pass_k} --policy hstar && python scripts/stages/probe_result.py --manifest \"{round_dir}/dosage/dosage_manifest.json\" --output \"{output}\""
   ],
   "schedule_curriculum": [
     "python",
@@ -17,25 +17,10 @@
     "--output",
     "{output}"
   ],
-  "collect_discriminator_samples": [
-    "bash",
-    "-lc",
-    "python scripts/collect_behavior_hint_samples.py \"$COEVO_HINTER_GRPO_DATASET\" \"{output}\" --hints-per-state 4"
-  ],
-  "retrain_discriminator": [
-    "bash",
-    "-lc",
-    "python scripts/collect_discriminator_controls.py \"$COEVO_HINTER_GRPO_DATASET\" --audit-rows \"$COEVO_HINT_AUDIT_ROWS\" --output-dir \"{round_dir}/controls\" && python scripts/stages/prepare_discriminator_pairs.py --ordinary-pairs \"{pairs}\" --explicit-copy-controls \"{round_dir}/controls/explicit_copy_controls.jsonl\" --useless-controls \"{round_dir}/controls/useless_controls.jsonl\" --natural-copy-pairs \"{round_dir}/controls/explicit_copy_natural_pairs.jsonl\" --output \"{round_dir}/all_discriminator_pairs.jsonl\" --seed {round} && python scripts/train_behavior_discriminator.py --student-checkpoint \"{current_student}\" --pairs \"{round_dir}/all_discriminator_pairs.jsonl\" --output-dir \"{round_dir}/discriminator\" --seed {round} && python scripts/stages/discriminator_result.py --report \"{round_dir}/discriminator/discriminator_report.json\" --checkpoint \"{round_dir}/discriminator\" --ordinary-pairs \"{pairs}\" --round-index {round} --output \"{output}\" && bash scripts/stop_role.sh behavior_discriminator && bash scripts/start_role.sh behavior_discriminator \"{round_dir}/discriminator\""
-  ],
-  "train_independent_auditor": [
-    "bash",
-    "-lc",
-    "python scripts/train_behavior_discriminator.py --student-checkpoint \"{current_student}\" --pairs \"{round_dir}/all_discriminator_pairs.jsonl\" --output-dir \"{round_dir}/independent_discriminator\" --seed $((1000 + {round})) && python scripts/compare_behavior_discriminators.py --active \"{active_discriminator}\" --independent \"{round_dir}/independent_discriminator\" --pairs \"{pairs}\" --output \"{round_dir}/discriminator_comparison.json\" && python scripts/stages/independent_result.py --training-report \"{round_dir}/independent_discriminator/discriminator_report.json\" --comparison-report \"{round_dir}/discriminator_comparison.json\" --checkpoint \"{round_dir}/independent_discriminator\" --output \"{output}\""
-  ],
   "train_hinter_grpo": [
     "bash",
     "-lc",
-    "COEVO_HINTER_BASE_MODEL=\"{hinter}\" COEVO_HINTER_TUNER_TYPE=full bash scripts/train_hinter_grpo.sh \"$COEVO_HINTER_GRPO_DATASET\" \"{round_dir}/hinter\" {hinter_steps} && python scripts/stages/checkpoint_result.py --checkpoint-root \"{round_dir}/hinter\" --refresh-role hinter --output \"{output}\""
+    "python scripts/filter_hinter_grpo_dataset.py \"$COEVO_HINTER_GRPO_DATASET\" \"{curriculum}\" \"{round_dir}/scheduled_hinter_grpo.jsonl\" && COEVO_CURRENT_POLICY_CHECKPOINT=\"{student}\" COEVO_HINTER_BASE_MODEL=\"{hinter}\" COEVO_HINTER_TUNER_TYPE=full bash scripts/train_hinter_grpo.sh \"{round_dir}/scheduled_hinter_grpo.jsonl\" \"{round_dir}/hinter\" {hinter_steps} && python scripts/stages/checkpoint_result.py --checkpoint-root \"{round_dir}/hinter\" --refresh-role hinter --output \"{output}\""
   ],
   "rollback_student": [
     "bash",

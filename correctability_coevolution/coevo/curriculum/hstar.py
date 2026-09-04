@@ -218,6 +218,58 @@ def minimal_sufficient_level(
     )
 
 
+def classify_hinter_reachability(
+    no_hint: ProbeResult | float,
+    with_hinter: ProbeResult | float,
+    *,
+    sufficient: float = 0.5,
+    near_zero: float = 0.05,
+) -> HStarDecision:
+    """Two-view curriculum sensor for an emergent, unlevelled hinter."""
+
+    if not 0 <= near_zero < sufficient <= 1:
+        raise ValueError("thresholds must satisfy 0 <= near_zero < sufficient <= 1")
+    no_hint_score = _score(no_hint)
+    hinter_score = _score(with_hinter)
+    if no_hint_score is None:
+        raise ValueError("L0 probe must be measured")
+    if no_hint_score >= sufficient:
+        return HStarDecision(
+            HintLevel.L0_NONE,
+            ScenarioBand.MASTERED,
+            no_hint_score,
+            hinter_score,
+            hinter_score is None or hinter_score >= no_hint_score,
+            "unhinted checkpoint already meets the sufficient threshold",
+        )
+    if hinter_score is None:
+        return HStarDecision(
+            None,
+            ScenarioBand.UNMEASURED,
+            no_hint_score,
+            None,
+            True,
+            "the open-hinter probe had too few valid trials",
+        )
+    if hinter_score < sufficient:
+        return HStarDecision(
+            None,
+            ScenarioBand.OUT_OF_REACH,
+            no_hint_score,
+            hinter_score,
+            hinter_score >= no_hint_score,
+            "the current open hinter does not reach the sufficient threshold",
+        )
+    return HStarDecision(
+        HintLevel.HINTER,
+        ScenarioBand.FRONTIER if no_hint_score > near_zero else ScenarioBand.SCAFFOLDED,
+        no_hint_score,
+        hinter_score,
+        hinter_score >= no_hint_score,
+        "the current open hinter reaches the task without assigning a fixed dose",
+    )
+
+
 def curriculum_weights(
     decisions: Mapping[str, HStarDecision],
     *,

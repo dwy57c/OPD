@@ -16,36 +16,43 @@ def select_curriculum_tasks(manifest: dict, sample_count: int, seed: int):
     dropped = {}
     for task_id, weight in weights.items():
         level = (decisions.get(task_id) or {}).get("level")
-        if level is None or float(weight) <= 0:
+        band = str((decisions.get(task_id) or {}).get("band") or "")
+        if level in {None, HintLevel.L0_NONE.value} or band == "mastered":
             dropped[task_id] = {
                 "weight": float(weight),
-                "reason": "no trainable hint level",
+                "reason": "mastered/L0 rows are excluded from distillation",
             }
             continue
-        eligible.append((str(task_id), HintLevel.parse(level), float(weight)))
+        if float(weight) <= 0:
+            dropped[task_id] = {
+                "weight": float(weight),
+                "reason": "non-positive sampling weight",
+            }
+            continue
+        eligible.append((str(task_id), float(weight)))
     if not eligible:
         raise ValueError("dosage manifest has no task with a trainable hint level")
-    normalizer = sum(weight for _, _, weight in eligible)
+    normalizer = sum(weight for _, weight in eligible)
     rng = random.Random(seed)
     chosen = rng.choices(
         eligible,
-        weights=[weight / normalizer for _, _, weight in eligible],
+        weights=[weight / normalizer for _, weight in eligible],
         k=sample_count,
     )
     selections = [
         {
             "task_id": task_id,
-            "hint_level": level.value,
+            "hint_level": HintLevel.HINTER.value,
             "sampling_weight": weight,
         }
-        for task_id, level, weight in chosen
+        for task_id, weight in chosen
     ]
     return selections, dropped, normalizer
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Consume an h* dosage manifest into a mixed-level Student dataset"
+        description="Sample h* scenarios and label every trainable row with the open hinter"
     )
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--source-trajectories", type=Path, required=True)

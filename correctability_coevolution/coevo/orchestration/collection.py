@@ -392,7 +392,7 @@ def collect_mixed_dosage_dataset(
     output_dir: Path,
     selections: list[dict],
 ) -> dict:
-    """Materialize a weighted h* curriculum with per-row hint levels."""
+    """Use h* only for scenario weights; the open hinter chooses every hint dose."""
 
     if not selections:
         raise ValueError("mixed dosage curriculum has no selected tasks")
@@ -408,7 +408,7 @@ def collect_mixed_dosage_dataset(
     task_offsets: dict[str, int] = {}
     for sample_index, selection in enumerate(selections):
         task_id = str(selection["task_id"])
-        level = HintLevel.parse(selection["hint_level"])
+        level = HintLevel.HINTER
         candidates = by_task.get(task_id) or []
         if not candidates:
             raise ValueError(f"source pool has no trajectory for task {task_id!r}")
@@ -445,7 +445,7 @@ def collect_mixed_dosage_dataset(
         record = {
             **artifact_metadata(environment.config),
             "hint_level": "MIXED",
-            "sample_hint_level": level.value,
+            "sample_hint_level": HintLevel.HINTER.value,
             "curriculum_sample_index": sample_index,
             "domain": environment.config.domain,
             "task_split": environment.config.task_split,
@@ -458,12 +458,12 @@ def collect_mixed_dosage_dataset(
         }
         records.append(record)
         for row in collector.student_rows(record):
-            row["sample_hint_level"] = level.value
+            row["sample_hint_level"] = HintLevel.HINTER.value
             row["hint_level"] = "MIXED"
             row["curriculum_sample_index"] = sample_index
             student_rows.append(row)
         buyer_row = collector.buyer_row()
-        buyer_row["sample_hint_level"] = level.value
+        buyer_row["sample_hint_level"] = HintLevel.HINTER.value
         buyer_row["hint_level"] = "MIXED"
         buyer_row["curriculum_sample_index"] = sample_index
         buyer_rows.append(buyer_row)
@@ -483,11 +483,7 @@ def collect_mixed_dosage_dataset(
             "source_dataset_fingerprint": source_fingerprint,
             "curriculum_samples": len(selections),
             "sample_hint_level_counts": {
-                level.value: sum(
-                    HintLevel.parse(item["hint_level"]) is level
-                    for item in selections
-                )
-                for level in HintLevel
+                HintLevel.HINTER.value: len(selections),
             },
         }
     )

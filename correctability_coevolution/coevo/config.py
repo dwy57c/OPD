@@ -156,6 +156,8 @@ class InfraConfig:
     skill_gate_high: float = 0.05
     skill_sharpen_t_min: float = 0.7
     sharpen_enabled: bool = False
+    target_operator: str = "raw"
+    purified_beta: float = 1.0
 
     def __post_init__(self):
         if self.teacher_hint_mode not in {"none", "closed_model", "open_hinter"}:
@@ -215,6 +217,10 @@ class InfraConfig:
             raise ValueError("skill gate thresholds must satisfy 0 <= low < high")
         if not 0 < self.skill_sharpen_t_min < 1:
             raise ValueError("skill_sharpen_t_min must be in (0, 1)")
+        if self.target_operator not in {"raw", "purified"}:
+            raise ValueError("target_operator must be raw or purified")
+        if self.purified_beta <= 0:
+            raise ValueError("purified_beta must be positive")
 
     @property
     def student(self) -> ModelEndpoint:
@@ -262,6 +268,7 @@ class InfraConfig:
         hint_level = HintLevel.parse(
             os.getenv("COEVO_HINT_LEVEL", HintLevel.L3_ORACLE.value)
         )
+        target_operator = os.getenv("COEVO_TARGET_OPERATOR", "raw")
         previous_policy_url = os.getenv("COEVO_PREVIOUS_POLICY_URL", "")
         previous_policy = None
         if previous_policy_url or previous_policy_path:
@@ -322,7 +329,12 @@ class InfraConfig:
             ),
             target_schema_version=int(os.getenv("COEVO_TARGET_SCHEMA_VERSION", "2")),
             teacher_target_version=os.getenv(
-                "COEVO_TEACHER_TARGET_VERSION", "hint-ladder-raw-v1"
+                "COEVO_TEACHER_TARGET_VERSION",
+                (
+                    "purified-pmi-v1"
+                    if target_operator == "purified"
+                    else "hint-ladder-raw-v1"
+                ),
             ),
             tokenizer_id=os.getenv(
                 "COEVO_TOKENIZER_ID",
@@ -355,4 +367,6 @@ class InfraConfig:
                 os.getenv("COEVO_SKILL_SHARPEN_T_MIN", "0.7")
             ),
             sharpen_enabled=_env_bool("COEVO_SHARPEN_ENABLED", False),
+            target_operator=target_operator,
+            purified_beta=float(os.getenv("COEVO_PURIFIED_BETA", "1.0")),
         )

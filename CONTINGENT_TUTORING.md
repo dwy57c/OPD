@@ -3,174 +3,145 @@
 ## 1. Question and claims
 
 For public state `s`, hidden task information `h`, hint constructor `phi`, and
-self-Teacher `q(a | s, phi(h))`, forward distillation can only teach an
-unprivileged Student the marginal behavior
-
-```text
-p*(a | s) = E_{h | s}[q(a | s, phi(h))].
-```
-
-A good hint makes that marginal a deployable policy. A bad hint makes the
-Teacher solve a different game whose privileged optimum cannot be imitated.
+self-Teacher `q(a | s, phi(h))`, forward distillation teaches the unprivileged
+Student the hidden-state marginal of the hinted Teacher. A good hint improves
+the Student's game; a bad hint changes the game to one whose privileged optimum
+cannot be imitated.
 
 The falsifiable claims are:
 
-1. Increasing instance-fact dosage suppresses clarification and lookup while
-   increasing unsupported factual assertions.
-2. A fact-to-procedure contract and the minimum sufficient per-state dose `h*`
-   preserve usefulness with less behavior copying.
-3. A hinter should evolve with the Student using one cheap local reward and an
-   independently refreshed behavior discriminator.
+1. Instance-fact dosage suppresses information acquisition and increases
+   unsupported action commitments in multi-turn agents.
+2. Blind procedural hints prevent source-side leakage; Purified OPSD provides
+   an orthogonal sink-side control.
+3. An open hinter can learn its own contingent dose as the Student changes when
+   rewarded for transferable lift and charged for copying, excessive
+   distribution shift, and length.
 
-## 2. Three measurable conditions
+## 2. Fixed ladder for phenomenon experiments
 
-| Condition | Failure mode | Estimator |
-|---|---|---|
-| Content: Teacher behavior should reveal little additional information about `h` once `s` is known | marginal policy becomes confident guessing | conditional probe AUC minus s-only AUC; behavior audit |
-| Dose: hinted target must remain within the Student's absorbable region | hindsight support gap | frozen-checkpoint L0–L3 pass@k and `h*` |
-| State distribution: training states must match deployment and retain hidden-state diversity | memorization or irrelevant curriculum | fixed longitudinal panel plus held-out twin scenarios |
+- L1 receives no privileged facts and emits only a general policy reminder.
+- L2 receives only the public state and goal. It must teach unbiased evidence
+  acquisition and must not use an incomplete, privileged candidate ordering.
+- L3 receives structured hidden facts and must state them explicitly.
 
-The operational content criterion is public support: a claim is safe only when
-it follows from public history, domain policy, or observed tool output.
+The validator keeps the full hidden record even when L2 generation is blind.
+For tau2 it detects dates, amounts, database values, ordinary identifiers, and
+mixed capital-and-digit identifiers such as `ZX99AB`. For ALFWorld it checks
+the goal object's true receptacle, the destination instance, and unobserved
+states against both class and instance aliases.
 
-## 3. Experiments
+## 3. Three-view analytical reward
 
-### E1 — static audit
-
-Generate one Teacher macro-action for each fixed public state and each hint
-level. Report hint length, clarification rate, lookup rate, unsupported-claim
-rate, conditional leakage AUC, s-only AUC, and their difference. If L3 targets
-are not behaviorally dirtier than L2 targets, stop and revise the contract
-before training.
-
-### E2 — equal-budget dose response
-
-Train L1, L2, and L3 arms with the same states, seeds, base checkpoint, and
-reference active-token budget. L0 is the untouched base checkpoint. Disable
-skill-contrast temperature sharpening. Evaluate held-out task success and all
-three behavior endpoints with three seeds.
-
-### E3 — minimum sufficient dose
-
-At a frozen checkpoint, estimate L0–L3 success for each scenario with `k`
-independent trials. Select the smallest level meeting the sufficiency threshold.
-Classify scenarios as mastered, frontier, scaffolded, or out-of-reach. Schedule
-frontier/scaffolded states primarily, with explicit review and exploration mass.
-Use held-out twin scenarios for promotion and retirement decisions.
-
-The controller records non-monotone empirical dose curves. It must not assume
-that L3 always dominates L2.
-
-### E4 — one alternating hinter objective
-
-For a fixed public state `s`, fixed current Student `theta`, fixed standard
-action trajectory `tau*`, and candidate hint `h`, the only hinter GRPO reward is
+For a fixed current Student, public state `s`, candidate hint `h`, and fixed
+standard action trajectory `tau*`, score the same target tokens in parallel:
 
 ```text
-useful(h) = [log p_theta(tau* | s, h) - log p_theta(tau* | s)] / |tau*|
-copy(h)   = max(0, 2 * [D_t(s, operation_theta(s,h), h) - 0.5])
-reward(h) = useful(h) - lambda_copy * copy(h) - beta_len * tokens(h)
+p_t = p_theta(a*_t | s)
+q_t = p_theta(a*_t | s,h)
+r_t = p_theta(a*_t | h)       # system prompt + hint, no dialogue history
+
+lift_t = clip(log q_t - log p_t, -c, c)
+copy_t = clip(max(log r_t - log p_t, 0), 0, c)
+dose   = max(mean_t KL(q_t || p_t) - bandwidth, 0)
+
+R(h) = mean(lift_t) - lambda mean(copy_t) - nu dose - mu tokens(h)
 ```
 
-The usefulness term is a per-target-token mean, requires exactly two
-teacher-forced Student scoring views, and uses no environment rollout.
-Chance-level discriminator output is free rather than penalized. Separately,
-each GRPO candidate hint produces one
-actual frozen-Student macro-action as its operation record. The copying
-discriminator has the same base-model scale as the Student plus one scalar head.
-It sees `(public state, operation record, candidate hint)` and is trained with
-the pairwise loss
+The dose estimator is the coarse-grained forward KL on shared explicit sparse
+support plus a tail bucket, a stable lower bound that avoids top-k membership
+flips dominating the signal. Lambda is calibrated from E1's natural L3 hints:
+the L3 mean-copy anchor must cancel its positive mean lift before dose and
+length costs are added.
+
+Machine-checkable fact or tool-name leakage remains a hard rule gate and caps
+the total reward at a negative floor. The optimizer uses no agent rollout,
+learned discriminator, pass@k result, or post-distillation gain.
+
+The decomposition also defines E1's plot quantities:
 
 ```text
--log sigmoid(score(true used hint) - score(same-state unused hint)).
+copy mass         = sum_t copy_t
+transferable mass = sum_t max(lift_t - copy_t, 0)
 ```
 
-The state and operation record are identical within a pair; only the hint
-changes. The discriminator is initialized from the current Student with a fresh
-score head and retrained on new behaviors every round, then frozen during hinter
-GRPO. The copying penalty is the mean pairwise probability that the true hint
-beats the other hints sampled for the same state.
+Report their normalized fractions for L1/L2/L3. A second E1 intervention swaps
+only hidden facts and regenerates hints; L2 should remain invariant while L3
+should change.
 
-Neither pass@k nor observed post-distillation improvement appears in this
-reward. Hint length is charged directly, so as the Student improves a long hint
-must earn enough additional log-probability gain to pay for every extra token.
-This is the mechanism expected to produce fading.
+## 4. Purified sink control
 
-Machine-checkable dates, amounts, identifiers, exact tool names, and copied
-oracle literals pass through a public rule audit before the learned reward. A
-rule hit caps the total reward at a fixed negative floor, so copying a concrete
-value cannot pay even when it sharply increases standard-action likelihood.
-For ALFWorld, the privileged payload additionally names
-`goal_object_locations`, `destination_receptacle`, and `unobserved_states`.
-L2 rejects both instance and class aliases of those locations, including hedged
-wording, while L3 is rejected unless it explicitly states every supplied fact.
-
-The only alternating loop uses one pass@k panel per round. A hinter candidate
-created in round `t` is accepted or rejected after the Student has actually
-distilled from it at the start of round `t+1`:
+The E2 sink-side control follows Purified OPSD. With clean base distribution
+`P0`, full hinted Teacher `q(s,h)`, and hint-only reference `p(h)`:
 
 ```text
-distill Student for N steps with the previous round's hinter candidate
-freeze the new Student and measure pass@k once
-use that measurement to accept/rollback the prior Student+hinter update
-use the same measurement to schedule the four curriculum bands
-collect fresh behavior/hint pairs and retrain the discriminator
-run a few hinter GRPO steps with usefulness - copying - length
-carry the new hinter candidate into the next Student segment for real acceptance
+P_target(v) proportional to
+P0(v) * exp((log q(v | s,h) - log p(v | h)) / beta).
 ```
 
-The Student segment is recollected each round from the current public-state
-curriculum using `teacher_hint_mode=open_hinter`. Collection, GRPO dataset
-construction, and behavior sampling all call the same `build_hinter_messages`
-function. Student training starts from the prior Student checkpoint and hinter
-GRPO starts from the prior full hinter checkpoint; neither model resets to its
-original base between rounds.
+E2 crosses `raw/purified` target operators with the fixed hint levels. This
+separates source contract effects, sink purification effects, and their
+combination under identical states, seeds, and active-token budgets.
 
-pass@k is used only by the scheduler and acceptance fuse. The measured
-cross-round distillation gain is logged and used for rollback but is never an
-optimizer reward. Rollback uses a binomial standard-error tolerance for the
-panel mean and a maximum fraction of materially regressed scenarios, rather
-than treating any single `2/8` drop as decisive.
+## 5. Emergent open hinter
 
-Three gates protect the copying signal:
+The trained hinter has no externally assigned dose. Every sample is marked
+`sample_hint_level=HINTER`; h* chooses scenarios only. Mastered/L0 rows are
+excluded so zero-gradient examples cannot consume the budget.
 
-- explicit-answer-copy hints must be identified with high accuracy;
-- useless generic hints must stay near chance, otherwise the pair construction
-  is leaking task identity;
-- every few rounds an independently initialized same-size discriminator is
-  trained and must agree with the active discriminator.
+The serving and GRPO prompt paths share one canonical serializer. The hinter
+receives public state separately and exactly two privileged keys:
+`domain_policy` and `authoritative_oracle_steps`. Extra keys fail closed.
 
-Hinter drift is constrained only by GRPO reference KL (`beta`); no second anchor
-model is trained.
+The hinter may begin its output with `level: L1`, `level: L2`, or `level: L3`.
+This self-report is stored for fading curves but is not required, validated, or
+used by the reward. Open-hinter acceptance uses one unlevelled 140-word gate
+for format, exact tool names, and hidden facts.
 
-## 4. Measurement validation
+Cold-start SFT is a necessary precondition, not an optional convenience. Its
+builder requires examples from at least two Student checkpoints and at least
+two non-zero minimal sufficient levels. Rows are selected by h* rather than by
+raw closed-model volume.
 
-Before behavioral claims are used downstream:
+## 6. Alternation and acceptance
 
-- manually label at least 200 examples per detector and report agreement and
-  Cohen's kappa;
-- report fresh-probe versus training-probe AUC and correlation with public
-  grounding judgments;
-- repeat verifier decisions under the same seed and manually audit scenarios
-  that remain indefinitely in the frontier band.
-
-## 5. Stop rules
-
-- E1 premise absent: revise the contracts before any dosage training.
-- Detector agreement inadequate: pause downstream training and repair measurement.
-- E2 flat: publish signal-calibration findings rather than claiming toxicity.
-- Hinter GRPO unstable or unable to beat the fixed controller: fall back
-  to the phenomenon plus h* controller paper.
-
-## 6. Legacy boundary
-
-The consecutive-checkpoint Buyer reward
+One round is:
 
 ```text
-max(KL(q_tilde || S_previous) - KL(q_tilde || S_current), 0)
+distill Student N steps using the current hinter candidate
+freeze and measure deployment pass@k once
+accept or roll back the Student and prior hinter update
+reuse that same panel to schedule scenarios
+run a few hinter GRPO steps with the current frozen Student
 ```
 
-is archived. Its sparse-support epsilon and independent vLLM endpoints can
-produce differences larger than the observed reward, and its positive-only
-feedback does not implement a variance-preserving curriculum. New measurements
-do not import this reward or start the previous-policy service.
+Pass@k performs only scheduling and delayed empirical acceptance. It never
+enters GRPO. The measured post-distillation gain is logged but never optimized.
+The Student and hinter both continue from their accepted previous checkpoints.
+
+## 7. ALFWorld protocol
+
+Use AgentGym/ETO expert trajectories and the canonical train, `valid_seen`, and
+`valid_unseen` partitions. Privilege is the rule-expert action sequence plus
+the simulator's hidden object-location/state table.
+
+The domain behavior endpoints are:
+
+- unsupported commitment: the first navigation target directly hits the true
+  hidden goal-object location;
+- information acquisition: a look/open/examine action occurs before pickup.
+
+These replace customer-service clarification and database-query counters while
+preserving the same behavioral-toxicity question.
+
+## 8. Stop rules
+
+- E1 premise absent: revise contracts before dosage training.
+- Detector/human agreement inadequate: repair measurement before downstream
+  claims.
+- E2 flat: report signal calibration rather than toxicity.
+- Open hinter unstable or unable to beat fixed controls: retain the phenomenon,
+  h* scheduler, and source/sink controls as the fallback paper.
+
+The retired Buyer learning-progress and learned behavior-discriminator methods
+are not part of the active runtime.

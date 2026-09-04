@@ -18,7 +18,9 @@ def main() -> None:
         (str(task_id), float(weight))
         for task_id, weight in manifest["sampling_weights"].items()
         if float(weight) > 0
-        and (manifest["decisions"].get(task_id) or {}).get("level") is not None
+        and (manifest["decisions"].get(task_id) or {}).get("level")
+        not in {None, "L0_NONE"}
+        and (manifest["decisions"].get(task_id) or {}).get("band") != "mastered"
     ]
     if not eligible:
         parser.error("h* manifest contains no trainable scenarios")

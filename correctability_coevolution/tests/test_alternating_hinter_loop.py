@@ -1,49 +1,9 @@
-from coevo.hinter_training import (
-    AcceptanceRule,
-    AlternatingHinterLoop,
-    BehaviorHintSample,
-    DiscriminatorControlReport,
-    DiscriminatorUpdate,
-    IndependentAuditResult,
-    PassKSnapshot,
-)
-from coevo.artifacts import canonical_hash
+import pytest
+
+from coevo.hinter_training import AcceptanceRule, AlternatingHinterLoop, PassKSnapshot
 
 
-def sample(hint="hint"):
-    return BehaviorHintSample(
-        state_hash="s",
-        public_state={},
-        hint=hint,
-        student_behavior={"role": "assistant", "content": hint},
-    )
-
-
-def control_report():
-    return DiscriminatorControlReport(
-        ordinary_pair_accuracy=0.8,
-        explicit_copy_accuracy=1.0,
-        explicit_copy_natural_accuracy=0.9,
-        useless_mean_distance_from_chance=0.05,
-        ordinary_pairs=2,
-        explicit_copy_pairs=2,
-        explicit_copy_natural_pairs=2,
-        useless_pairs=2,
-    )
-
-
-def update(checkpoint, samples, round_index):
-    return DiscriminatorUpdate(
-        checkpoint,
-        round_index,
-        len(samples),
-        canonical_hash([sample.to_dict() for sample in samples]),
-        True,
-        control_report(),
-    )
-
-
-def test_one_pass_measurement_both_rejects_prior_hinter_and_schedules():
+def test_one_measurement_accepts_or_rolls_back_then_trains_hinter():
     events = []
     baseline = PassKSnapshot({"s": 0.75}, k=8)
     loop = AlternatingHinterLoop(
@@ -59,20 +19,8 @@ def test_one_pass_measurement_both_rejects_prior_hinter_and_schedules():
             ("schedule", snapshot.mean)
         )
         or pool,
-        collect_fresh_discriminator_samples=lambda student, hinter, curriculum: events.append(
-            ("collect-discriminator", student, hinter)
-        )
-        or [sample("hint-a"), sample("hint-b")],
-        retrain_discriminator=lambda samples, round_index: events.append(
-            ("retrain-discriminator", len(samples), round_index)
-        )
-        or update("disc-new", samples, round_index),
-        train_independent_auditor=lambda samples, active, round_index: events.append(
-            ("independent-audit", len(samples), active, round_index)
-        )
-        or IndependentAuditResult("disc-audit", control_report(), 0.9),
-        train_hinter_grpo=lambda student, hinter, disc, curriculum, steps: events.append(
-            ("hinter-grpo", student, hinter, disc, steps)
+        train_hinter_grpo=lambda student, hinter, curriculum, steps: events.append(
+            ("hinter-grpo", student, hinter, steps)
         )
         or "next-hinter-candidate",
         rollback_student=lambda candidate, previous: events.append(
@@ -104,9 +52,6 @@ def test_one_pass_measurement_both_rejects_prior_hinter_and_schedules():
         "rollback-student",
         "rollback-hinter",
         "schedule",
-        "collect-discriminator",
-        "retrain-discriminator",
-        "independent-audit",
         "hinter-grpo",
     ]
     assert result.pass_measurements_this_round == 1
@@ -115,31 +60,17 @@ def test_one_pass_measurement_both_rejects_prior_hinter_and_schedules():
     assert result.accepted_hinter == "hinter-accepted"
     assert result.measured_distillation_gain == -0.25
     assert result.next_hinter_candidate == "next-hinter-candidate"
-    assert result.discriminator_training_examples == 2
-    assert any(
-        reason.startswith("mean_pass_at_k") for reason in result.rollback_reasons
-    )
-    # On rollback the scheduler consumes the accepted baseline, not the bad result.
+    assert any(reason.startswith("mean_pass_at_k") for reason in result.rollback_reasons)
     assert ("schedule", 0.75) in events
 
 
-def test_first_round_accepts_without_a_baseline_and_still_measures_once():
+def test_first_round_accepts_without_baseline_and_still_measures_once():
     measurements = []
     loop = AlternatingHinterLoop(
         train_student=lambda _student, _hinter, _steps: "student-new",
         measure_pass_at_k=lambda _student, _panel, k: measurements.append(k)
         or PassKSnapshot({"s": 0.5}, k),
         schedule_curriculum=lambda _snapshot, pool: pool,
-        collect_fresh_discriminator_samples=lambda *_args: [
-            sample("hint-a"),
-            sample("hint-b"),
-        ],
-        retrain_discriminator=lambda samples, round_index: update(
-            "disc", samples, round_index
-        ),
-        train_independent_auditor=lambda _samples, _active, _round: (
-            IndependentAuditResult("disc-audit", control_report(), 0.9)
-        ),
         train_hinter_grpo=lambda *_args: "hinter-next",
         rollback_student=lambda *_args: None,
         rollback_hinter=lambda *_args: None,
@@ -160,15 +91,10 @@ def test_first_round_accepts_without_a_baseline_and_still_measures_once():
 
 
 def test_acceptance_requires_identical_pass_panel():
-    rule = AcceptanceRule()
-    try:
-        rule.regressions(
+    with pytest.raises(ValueError, match="identical"):
+        AcceptanceRule().regressions(
             PassKSnapshot({"a": 1.0}, 8), PassKSnapshot({"b": 1.0}, 8)
         )
-    except ValueError as error:
-        assert "identical" in str(error)
-    else:
-        raise AssertionError("mismatched pass@k panels were accepted")
 
 
 def test_acceptance_ignores_one_noisy_scenario_but_rejects_panel_regression():
