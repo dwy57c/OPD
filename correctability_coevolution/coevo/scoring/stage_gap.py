@@ -301,6 +301,21 @@ class TeacherTargetBuilder:
         prefix = self._input_ids(prefix)
         full_ids = tuple(int(item) for item in full)
         prefix_ids = tuple(int(item) for item in prefix)
+        if not tool_target and full_ids[: len(prefix_ids)] != prefix_ids:
+            # Qwen's continue_final_message path omits the generation-time
+            # thinking prefix for a system+assistant (hint-only) conversation.
+            # Score the exact assistant text after the ordinary generation
+            # prefix so all three information views share identical targets.
+            if not hasattr(self.tokenizer, "encode"):
+                raise ValueError(
+                    "chat template does not preserve the assistant generation prefix"
+                )
+            content = str(messages[-1].get("content") or "")
+            target_ids = tuple(
+                int(item)
+                for item in self.tokenizer.encode(content, add_special_tokens=False)
+            )
+            full_ids = (*prefix_ids, *target_ids)
         if tool_target and hasattr(self.tokenizer, "encode"):
             # The ordinary Qwen rendering keeps the turn terminator. Swift's
             # add_eos=False training labels exclude it, as does the continued

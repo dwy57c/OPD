@@ -106,6 +106,46 @@ class FakeToolTokenizer:
         return [99, 10]
 
 
+class FakeHintOnlyTokenizer:
+    chat_template = "fake-hint-only-v1"
+
+    @staticmethod
+    def apply_chat_template(messages, *, tokenize, add_generation_prompt, **kwargs):
+        assert tokenize is True
+        if add_generation_prompt:
+            return [1, 2]
+        return [1, 3, 4]
+
+    @staticmethod
+    def encode(text, *, add_special_tokens):
+        assert text == "look"
+        assert add_special_tokens is False
+        return [3, 4]
+
+
+def test_text_target_recovers_generation_prefix_for_hint_only_view():
+    config = InfraConfig(
+        policy=ModelEndpoint("current", "http://current"),
+        buyer_reference=ModelEndpoint("buyer", "http://buyer"),
+        teacher_hint_mode="none",
+    )
+    builder = TeacherTargetBuilder(
+        config,
+        tokenizer=FakeHintOnlyTokenizer(),
+        client=FakeClient(),
+    )
+
+    tokenized = builder.tokenize_target(
+        [
+            {"role": "system", "content": "policy plus hint"},
+            {"role": "assistant", "content": "look"},
+        ]
+    )
+
+    assert tokenized.full_input_ids == (1, 2, 3, 4)
+    assert tokenized.target_input_ids == (3, 4)
+
+
 def test_tool_call_target_keeps_macro_action_and_strips_only_turn_terminator():
     config = InfraConfig(
         policy=ModelEndpoint("current", "http://current"),

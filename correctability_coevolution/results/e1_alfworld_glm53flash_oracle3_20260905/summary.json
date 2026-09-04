@@ -1,0 +1,70 @@
+{
+  "domain": "alfworld",
+  "split": "valid_seen",
+  "sessions": 3,
+  "seeds": [
+    42,
+    43,
+    44
+  ],
+  "total_reference_turns": 107,
+  "hinter_model": "glm-5.3-flash",
+  "policy_model": "Qwen3-4B",
+  "hint_scope": "one newly generated hint per session and level",
+  "reference_pool_source": "agentgym_eto_expert",
+  "views": [
+    "state",
+    "state_plus_hint",
+    "hint_only"
+  ],
+  "aggregation": "token mean -> turn mean -> equal session mean",
+  "analytical_scoring_panel": {
+    "eligible_reference_sessions": 3,
+    "skipped_sessions": 0,
+    "skip_rate": 0.0
+  },
+  "levels": {
+    "L1_POLICY": {
+      "sessions": 3,
+      "valid_sessions": 3,
+      "contract_violation_rate": 0.0,
+      "mean_hint_words": 36.0,
+      "mean_lift": 0.22410327416363093,
+      "mean_copy": 0.9643046965862396,
+      "mean_dose_kl": 0.25648181680429394,
+      "copy_fraction": 0.6574199906079322,
+      "transferable_fraction": 0.09973553117524914,
+      "fact_leak_session_rate": 0.0,
+      "direct_location_hit_rate": 0.3333333333333333,
+      "query_before_pickup_rate": 0.6666666666666666
+    },
+    "L2_PROCEDURAL": {
+      "sessions": 3,
+      "valid_sessions": 3,
+      "contract_violation_rate": 0.0,
+      "mean_hint_words": 85.33333333333333,
+      "mean_lift": -0.12867070905420816,
+      "mean_copy": 0.6995577015594147,
+      "mean_dose_kl": 2.7575983917925306,
+      "copy_fraction": 0.5614826282268207,
+      "transferable_fraction": 0.13272963114501315,
+      "fact_leak_session_rate": 0.0,
+      "direct_location_hit_rate": 0.0,
+      "query_before_pickup_rate": 1.0
+    },
+    "L3_ORACLE": {
+      "sessions": 3,
+      "valid_sessions": 3,
+      "contract_violation_rate": 0.0,
+      "mean_hint_words": 116.66666666666667,
+      "mean_lift": -0.9749388332365388,
+      "mean_copy": 0.26268041264258046,
+      "mean_dose_kl": 2.732660729824712,
+      "copy_fraction": 0.2957340040717444,
+      "transferable_fraction": 0.27075535763038333,
+      "fact_leak_session_rate": 1.0,
+      "direct_location_hit_rate": 1.0,
+      "query_before_pickup_rate": 1.0
+    }
+  }
+}
