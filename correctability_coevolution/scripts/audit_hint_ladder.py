@@ -13,6 +13,7 @@ from coevo.audit import (
     NLLeakageJudge,
     OpenAIGroundingJudge,
     build_matched_shuffled_examples,
+    aggregate_session_signals,
 )
 from coevo.config import InfraConfig
 from coevo.environment import Tau2Environment
@@ -79,6 +80,7 @@ def summarize_level_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 / len(scored),
             }
         )
+    result["session_analytical"] = aggregate_session_signals(valid)
     return result
 
 
@@ -95,6 +97,7 @@ def _states_from_trajectories(path: Path) -> list[dict[str, Any]]:
                     "task_split": record.get("task_split", "train"),
                     "task_id": str(record["task_id"]),
                     "seed": int(record.get("seed", 42)),
+                    "session_id": f"{record['task_id']}:{record.get('seed', 42)}",
                     "history_before": decision["history_before"],
                     "student_action": decision["student_action"],
                 }
@@ -125,6 +128,7 @@ def _collect_states(config: InfraConfig, task_ids: list[str]) -> list[dict[str, 
                     "task_split": config.task_split,
                     "task_id": task_id,
                     "seed": config.seed,
+                    "session_id": f"{task_id}:{config.seed}",
                     "history_before": dump_messages(list(decision.history_before)),
                     "student_action": decision.student_action.model_dump(mode="json"),
                 }
@@ -156,7 +160,7 @@ def main() -> None:
         "--score-transfer",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Run the three teacher-forced E1 copy/transfer decomposition.",
+        help="Run the four teacher-forced E1 copy/transfer decomposition.",
     )
     parser.add_argument(
         "--validate-standard-actions",
@@ -276,6 +280,7 @@ def main() -> None:
                 "task_split": state["task_split"],
                 "task_id": state["task_id"],
                 "state_hash": decision.state_hash,
+                "session_id": state["session_id"],
                 "hint_level": level.value,
                 "hint": result.hint,
                 "hint_error": hint_error,
@@ -380,10 +385,11 @@ def main() -> None:
         selected = [row for row in rows if row["hint_level"] == level.value]
         summary["levels"][level.value] = summarize_level_rows(selected)
     l3 = summary["levels"].get(HintLevel.L3_ORACLE.value, {})
-    if l3.get("mean_copy", 0) > 0:
+    l3_session = l3.get("session_analytical") or {}
+    if (l3_session.get("mean_copy") or 0) > 0:
         summary["recommended_copying_weight_from_l3"] = calibrate_copying_weight(
-            l3_mean_lift=l3["mean_lift"],
-            l3_mean_copy=l3["mean_copy"],
+            l3_mean_lift=l3_session["mean_lift"],
+            l3_mean_copy=l3_session["mean_copy"],
         )
 
     if args.run_leakage_probe:

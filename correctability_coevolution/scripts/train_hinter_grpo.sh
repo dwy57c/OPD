@@ -13,7 +13,7 @@ coevo_require_nonempty_file "$DATA"
 export COEVO_TEACHER_HINT_MODE=none
 
 # The current Student endpoint is frozen throughout this GRPO call. Its
-# three teacher-forced views supply lift/copy/dose; pass@k stays out of reward.
+# four teacher-forced views supply lift/copy/dose; pass@k stays out of reward.
 python "$COEVO_ROOT/scripts/wait_for_servers.py" \
   "${COEVO_POLICY_URL:-http://127.0.0.1:${COEVO_POLICY_PORT:-8000}}" \
   --timeout 30 \

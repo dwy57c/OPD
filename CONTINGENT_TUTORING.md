@@ -33,7 +33,7 @@ mixed capital-and-digit identifiers such as `ZX99AB`. For ALFWorld it checks
 the goal object's true receptacle, the destination instance, and unobserved
 states against both class and instance aliases.
 
-## 3. Three-view analytical reward
+## 3. Four-view analytical reward
 
 For a fixed current Student, public state `s`, candidate hint `h`, and fixed
 standard action trajectory `tau*`, score the same target tokens in parallel:
@@ -42,13 +42,25 @@ standard action trajectory `tau*`, score the same target tokens in parallel:
 p_t = p_theta(a*_t | s)
 q_t = p_theta(a*_t | s,h)
 r_t = p_theta(a*_t | h)       # system prompt + hint, no dialogue history
+e_t = p_theta(a*_t | empty)   # same system prompt, no hint or dialogue history
 
 lift_t = clip(log q_t - log p_t, -c, c)
-copy_t = clip(max(log r_t - log p_t, 0), 0, c)
+copy_t = clip(max(log r_t - log e_t, 0), 0, c)
 dose   = max(mean_t KL(q_t || p_t) - bandwidth, 0)
 
 R(h) = mean(lift_t) - lambda mean(copy_t) - nu dose - mu tokens(h)
 ```
+
+The empty-context subtraction isolates what the hint itself contributes. It
+prevents a generic no-state prior (for example, a household model defaulting to
+`countertop`) from being charged as copying merely because the full public
+state contains many competing locations. `mean_copy` is clipped nats per target
+token, not a probability or a fraction of copied tokens.
+
+E1 aggregates in two stages: token means form one decision-turn score, then
+turns are averaged within each session, and sessions receive equal weight.
+GRPO remains turn-local because a fresh hint is generated at each decision;
+assigning future turns to an earlier hint would misattribute credit.
 
 The dose estimator is the coarse-grained forward KL on shared explicit sparse
 support plus a tail bucket, a stable lower bound that avoids top-k membership

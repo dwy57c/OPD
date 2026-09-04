@@ -4,6 +4,45 @@ from difflib import SequenceMatcher
 from typing import Any, Iterable, Mapping
 
 
+def aggregate_session_signals(rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+    """Average tokens within turns, turns within sessions, then sessions equally."""
+
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
+    for row in rows:
+        signals = row.get("analytical_signals")
+        if not isinstance(signals, Mapping):
+            continue
+        session_id = str(row.get("session_id") or row.get("state_id") or "session")
+        grouped.setdefault(session_id, []).append(signals)
+    session_rows = []
+    for session_id, values in grouped.items():
+        session_rows.append(
+            {
+                "session_id": session_id,
+                "turns": len(values),
+                "mean_lift": sum(float(value["mean_lift"]) for value in values)
+                / len(values),
+                "mean_copy": sum(float(value["mean_copy"]) for value in values)
+                / len(values),
+            }
+        )
+    return {
+        "sessions": len(session_rows),
+        "scored_turns": sum(row["turns"] for row in session_rows),
+        "mean_lift": (
+            sum(row["mean_lift"] for row in session_rows) / len(session_rows)
+            if session_rows
+            else None
+        ),
+        "mean_copy": (
+            sum(row["mean_copy"] for row in session_rows) / len(session_rows)
+            if session_rows
+            else None
+        ),
+        "per_session": session_rows,
+    }
+
+
 def _hint_text(row: Mapping[str, Any]) -> str:
     value = row.get("hint")
     if isinstance(value, Mapping) and "hint" in value:

@@ -28,7 +28,7 @@ def sparse(actual_logs):
     )
 
 
-def scorer(hint_only_logs, *, clip=5.0):
+def scorer(hint_only_logs, *, empty_logs=(-4.0, -4.0), clip=5.0):
     calls = []
 
     class Builder:
@@ -39,6 +39,8 @@ def scorer(hint_only_logs, *, clip=5.0):
                 return sparse((-3.0, -3.0))
             if view.startswith("hinter_reward_hint_only"):
                 return sparse(hint_only_logs)
+            if view == "hinter_reward_empty_context":
+                return sparse(empty_logs)
             return sparse((-1.0, -1.0))
 
     config = SimpleNamespace(
@@ -87,20 +89,24 @@ def test_reward_is_four_term_analytical_objective():
         )
 
 
-def test_usefulness_uses_three_teacher_forced_views_on_same_tau_star():
+def test_usefulness_uses_four_teacher_forced_views_on_same_tau_star():
     utility, calls = scorer((-4.0, -4.0))
     result = utility.score(
         student_visible_messages=messages(),
         hint="Ask for the missing lookup key.",
         state_hash="state",
     )
-    assert len(calls) == 3
+    assert len(calls) == 4
     assert all(call["checkpoint_id"] == "student-checkpoint" for call in calls)
     assert all(call["messages"][-1] == messages()[-1] for call in calls)
     hint_only = next(
         call for call in calls if call["information_view"].startswith("hinter_reward_hint_only")
     )
     assert [row["role"] for row in hint_only["messages"]] == ["system", "assistant"]
+    empty = next(
+        call for call in calls if call["information_view"] == "hinter_reward_empty_context"
+    )
+    assert [row["role"] for row in empty["messages"]] == ["system", "assistant"]
     assert result.unhinted_log_probability == pytest.approx(-6.0)
     assert result.hinted_log_probability == pytest.approx(-2.0)
     assert result.mean_lift == pytest.approx(2.0)
@@ -125,6 +131,17 @@ def test_copy_answer_hint_is_positive_but_clean_l2_is_near_zero():
     assert procedural.mean_copy == pytest.approx(0.0)
 
 
+def test_copy_does_not_charge_context_removal_prior():
+    prior_only, _ = scorer((-0.5, -0.5), empty_logs=(-0.5, -0.5))
+    result = prior_only.score(
+        student_visible_messages=messages(),
+        hint="Observe before acting.",
+        state_hash="prior",
+    )
+    assert result.hint_only_log_probability > result.unhinted_log_probability
+    assert result.mean_copy == pytest.approx(0.0)
+
+
 def test_per_token_lift_and_copy_are_clipped():
     utility, _ = scorer((3.0, 3.0), clip=1.25)
     result = utility.score(
@@ -132,6 +149,8 @@ def test_per_token_lift_and_copy_are_clipped():
     )
     assert result.mean_lift == pytest.approx(1.25)
     assert result.mean_copy == pytest.approx(1.25)
+    assert all(value > 1.25 for value in result.probability_trace.raw_token_lifts)
+    assert all(value > 1.25 for value in result.probability_trace.raw_token_copies)
 
 
 def test_l3_anchor_calibrates_lambda():

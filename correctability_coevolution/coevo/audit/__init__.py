@@ -21,7 +21,7 @@ from .leakage_probe import (
     build_matched_shuffled_examples,
     roc_auc,
 )
-from .hint_metrics import counterfactual_invariance
+from .hint_metrics import aggregate_session_signals, counterfactual_invariance
 from .validation import AgreementReport, binary_agreement, validate_annotation_rows
 
 __all__ = [
@@ -38,6 +38,7 @@ __all__ = [
     "NLLeakageJudge",
     "OpenAIGroundingJudge",
     "audit_alfworld_behavior",
+    "aggregate_session_signals",
     "build_matched_shuffled_examples",
     "counterfactual_invariance",
     "binary_agreement",

@@ -21,7 +21,7 @@ from coevo.scoring.stage_gap import SparseTargetView, TeacherTargetBuilder
 
 @dataclass(frozen=True)
 class HinterRewardConfig:
-    """Weights for the three-view analytical hinter objective."""
+    """Weights for the four-view analytical hinter objective."""
 
     copying_weight: float = 1.0
     dose_weight: float = 1.0
@@ -68,6 +68,9 @@ class TeacherForcedProbabilityTrace:
     unhinted_actual_logprobs: tuple[float, ...]
     hinted_actual_logprobs: tuple[float, ...]
     hint_only_actual_logprobs: tuple[float, ...]
+    empty_context_actual_logprobs: tuple[float, ...]
+    raw_token_lifts: tuple[float, ...]
+    raw_token_copies: tuple[float, ...]
     token_lifts: tuple[float, ...]
     token_copies: tuple[float, ...]
     token_dose_kls: tuple[float, ...]
@@ -94,6 +97,11 @@ class TeacherForcedProbabilityTrace:
             hint_only_actual_logprobs=tuple(
                 float(item) for item in value["hint_only_actual_logprobs"]
             ),
+            empty_context_actual_logprobs=tuple(
+                float(item) for item in value["empty_context_actual_logprobs"]
+            ),
+            raw_token_lifts=tuple(float(item) for item in value["raw_token_lifts"]),
+            raw_token_copies=tuple(float(item) for item in value["raw_token_copies"]),
             token_lifts=tuple(float(item) for item in value["token_lifts"]),
             token_copies=tuple(float(item) for item in value["token_copies"]),
             token_dose_kls=tuple(float(item) for item in value["token_dose_kls"]),
@@ -107,6 +115,7 @@ class TeacherForcedUsefulness:
     unhinted_log_probability: float
     hinted_log_probability: float
     hint_only_log_probability: float
+    empty_context_log_probability: float
     mean_lift: float
     mean_copy: float
     mean_dose_kl: float
@@ -153,6 +162,7 @@ class TeacherForcedUsefulness:
             "unhinted_log_probability": self.unhinted_log_probability,
             "hinted_log_probability": self.hinted_log_probability,
             "hint_only_log_probability": self.hint_only_log_probability,
+            "empty_context_log_probability": self.empty_context_log_probability,
             "log_probability_gain": self.log_probability_gain,
             "mean_lift": self.mean_lift,
             "mean_copy": self.mean_copy,
@@ -307,7 +317,7 @@ def _clip(value: float, limit: float) -> float:
 
 
 class TeacherForcedUsefulnessScorer:
-    """Score tau* under state, state+hint, and hint-only views."""
+    """Score tau* under state, state+hint, hint-only, and empty views."""
 
     def __init__(
         self,
@@ -354,6 +364,10 @@ class TeacherForcedUsefulnessScorer:
             {**deepcopy(messages[0]), "content": hinted_system},
             deepcopy(messages[-1]),
         ]
+        empty_context_messages = [
+            deepcopy(messages[0]),
+            deepcopy(messages[-1]),
+        ]
         common = {
             "endpoint": self.config.policy,
             "checkpoint_id": checkpoint,
@@ -377,8 +391,13 @@ class TeacherForcedUsefulnessScorer:
                 "information_view": f"hinter_reward_hint_only:{hint_hash}",
                 "messages": hint_only_messages,
             },
+            "empty_context": {
+                **common,
+                "information_view": "hinter_reward_empty_context",
+                "messages": empty_context_messages,
+            },
         }
-        with ThreadPoolExecutor(max_workers=3) as executor:
+        with ThreadPoolExecutor(max_workers=4) as executor:
             futures = {
                 name: executor.submit(self.target_builder.score_view, **arguments)
                 for name, arguments in requests.items()
@@ -388,24 +407,28 @@ class TeacherForcedUsefulnessScorer:
         unhinted = views["unhinted"]
         hinted = views["hinted"]
         hint_only = views["hint_only"]
+        empty_context = views["empty_context"]
         if not (
             hinted.target_input_ids
             == unhinted.target_input_ids
             == hint_only.target_input_ids
+            == empty_context.target_input_ids
         ):
-            raise ValueError("all three standard-trajectory tokenizations must align")
+            raise ValueError("all four standard-trajectory tokenizations must align")
 
         p_logs = _actual_logprobs(unhinted)
         q_logs = _actual_logprobs(hinted)
         h_logs = _actual_logprobs(hint_only)
-        lifts = tuple(
-            _clip(q_value - p_value, self.token_clip)
-            for q_value, p_value in zip(q_logs, p_logs)
+        empty_logs = _actual_logprobs(empty_context)
+        raw_lifts = tuple(
+            q_value - p_value for q_value, p_value in zip(q_logs, p_logs)
         )
-        copies = tuple(
-            max(0.0, _clip(h_value - p_value, self.token_clip))
-            for h_value, p_value in zip(h_logs, p_logs)
+        raw_copies = tuple(
+            max(0.0, h_value - empty_value)
+            for h_value, empty_value in zip(h_logs, empty_logs)
         )
+        lifts = tuple(_clip(value, self.token_clip) for value in raw_lifts)
+        copies = tuple(_clip(value, self.token_clip) for value in raw_copies)
         dose_kls = _coarse_token_kl(hinted, unhinted)
         count = len(lifts)
         trace = TeacherForcedProbabilityTrace(
@@ -415,6 +438,9 @@ class TeacherForcedUsefulnessScorer:
             unhinted_actual_logprobs=p_logs,
             hinted_actual_logprobs=q_logs,
             hint_only_actual_logprobs=h_logs,
+            empty_context_actual_logprobs=empty_logs,
+            raw_token_lifts=raw_lifts,
+            raw_token_copies=raw_copies,
             token_lifts=lifts,
             token_copies=copies,
             token_dose_kls=dose_kls,
@@ -423,6 +449,7 @@ class TeacherForcedUsefulnessScorer:
             unhinted_log_probability=sum(p_logs),
             hinted_log_probability=sum(q_logs),
             hint_only_log_probability=sum(h_logs),
+            empty_context_log_probability=sum(empty_logs),
             mean_lift=sum(lifts) / count,
             mean_copy=sum(copies) / count,
             mean_dose_kl=sum(dose_kls) / count,

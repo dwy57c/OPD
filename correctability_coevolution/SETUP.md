@@ -48,7 +48,7 @@ python scripts/audit_hint_ladder.py \
   --output-dir artifacts/e1_hint_audit
 ```
 
-The audit runs the same three teacher-forced views used by GRPO and reports
+The audit runs the same four teacher-forced views used by GRPO and reports
 mean lift, mean analytical copy, and copy/transferable fractions. It records the
 coarse dose value only as an internal penalty diagnostic, not a paper metric.
 `recommended_copying_weight_from_l3` sets lambda from the observed L3 anchor.
@@ -129,7 +129,7 @@ python scripts/build_hinter_cold_start_dataset.py \
   --output artifacts/hinter_cold_start.jsonl
 ```
 
-## E4: three-view GRPO and alternation
+## E4: four-view GRPO and alternation
 
 Build one fixed standard trajectory per audited state:
 
@@ -138,14 +138,20 @@ python scripts/build_hinter_grpo_dataset.py \
   artifacts/e1_hint_audit/audit_rows.jsonl artifacts/hinter_grpo.jsonl
 ```
 
-The reward uses three parallel teacher-forced calls to the same frozen Student:
+The reward uses four parallel teacher-forced calls to the same frozen Student:
 
 ```text
 lift_t = clip(log q(a*_t | s,h) - log p(a*_t | s), -c, c)
-copy_t = clip(max(log p(a*_t | h) - log p(a*_t | s), 0), 0, c)
+copy_t = clip(max(log p(a*_t | h) - log p(a*_t | empty), 0), 0, c)
 dose   = max(mean_t KL(q_h || p) - bandwidth, 0)
 R      = mean(lift) - lambda mean(copy) - nu dose - mu tokens(h)
 ```
+
+The empty view contains the ordinary system prompt but no hint or dialogue.
+Therefore copy isolates the hint's effect instead of charging a no-state model
+prior. `mean_copy` is clipped nats per target token, not an 0–1 probability.
+E1 then averages turn scores within each session and gives sessions equal
+weight; GRPO keeps the signal local to the turn whose hint produced it.
 
 The sparse dose KL is a stable coarse-grained lower bound on shared explicit
 support plus one tail bucket. Treat it only as an internal penalty proxy, not as

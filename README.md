@@ -42,7 +42,7 @@ the dose-response experiment; it is the untouched base checkpoint.
 | `correctability_coevolution/coevo/audit/behavior.py` | clarification, lookup, and public-grounding metrics |
 | `correctability_coevolution/coevo/audit/leakage_probe.py` | conditional `(s,a,h)` leakage probe and s-only baseline |
 | `correctability_coevolution/coevo/curriculum/hstar.py` | frozen-checkpoint pass@k probes, h*, and four-band scheduling |
-| `correctability_coevolution/coevo/hinter_training/grpo_reward.py` | three-view analytical lift/copy/dose/length reward |
+| `correctability_coevolution/coevo/hinter_training/grpo_reward.py` | four-view analytical lift/copy/dose/length reward |
 | `correctability_coevolution/coevo/hinter_training/cold_start.py` | multi-checkpoint, minimal-dose-diverse hinter SFT selection |
 | `correctability_coevolution/coevo/hinter_training/alternating_loop.py` | Student N steps, pass@k scheduling, hinter GRPO, acceptance rollback |
 | `correctability_coevolution/scripts/audit_hint_ladder.py` | E1 runner |
