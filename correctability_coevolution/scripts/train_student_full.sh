@@ -24,7 +24,7 @@ python "$COEVO_ROOT/scripts/wait_for_servers.py" \
   --timeout 30 \
   --model "${COEVO_POLICY_MODEL:-Qwen3-4B}"
 
-TRAIN_GPUS=${COEVO_POLICY_TRAIN_GPUS:-1,2,3,4,5,6,7}
+TRAIN_GPUS=${COEVO_POLICY_TRAIN_GPUS:-2,3,4,5,6,7}
 IFS=, read -r -a TRAIN_GPU_IDS <<< "$TRAIN_GPUS"
 NPROC=${COEVO_POLICY_TRAIN_NPROC:-${#TRAIN_GPU_IDS[@]}}
 if [[ $NPROC -ne ${#TRAIN_GPU_IDS[@]} ]]; then

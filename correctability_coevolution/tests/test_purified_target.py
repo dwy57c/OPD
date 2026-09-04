@@ -38,3 +38,16 @@ def test_purified_target_keeps_state_conditioned_residual():
     )
     probabilities = [math.exp(value) for value in result.sharpened_topk_logprobs[0]]
     assert probabilities[0] > probabilities[1]
+
+
+def test_purified_target_centers_and_tanh_clips_extreme_pmi():
+    result = construct_purified_target(
+        unhinted=view(0.5, 0.5),
+        hinted=view(1.0 - 1e-12, 1e-12),
+        hint_only=view(1e-12, 1.0 - 1e-12),
+        beta=1.0,
+        clip_threshold=1.0,
+    )
+    probabilities = [math.exp(value) for value in result.sharpened_topk_logprobs[0]]
+    assert probabilities[0] < 0.89
+    assert probabilities[1] > 0.11

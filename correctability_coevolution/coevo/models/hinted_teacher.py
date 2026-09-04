@@ -261,7 +261,11 @@ class OpenModelTeacherHinter(ClosedModelTeacherHinter):
             raise ValueError("L0 must bypass the hinter API")
         public_state = payload.get("current_history") or payload.get("public_state") or []
         privileged_context = narrow_privileged_context(payload)
-        messages = build_hinter_messages(public_state, privileged_context)
+        messages = build_hinter_messages(
+            public_state,
+            privileged_context,
+            payload.get("student_profile"),
+        )
         started = time.monotonic()
         last_error = None
         correction = ""
@@ -361,6 +365,7 @@ class HintedTeacherAgent(LLMAgent):
         hinter_mode: str = "closed_model",
         hint_domain: str = "tau2",
         structured_instance_facts: dict[str, Any] | None = None,
+        student_profile: dict[str, Any] | None = None,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -379,6 +384,7 @@ class HintedTeacherAgent(LLMAgent):
         self.hint_level = HintLevel.parse(hint_level)
         self.hint_domain = hint_domain
         self.structured_instance_facts = dict(structured_instance_facts or {})
+        self.student_profile = dict(student_profile or {})
 
     def _hint_payload(self, history: list[APICompatibleMessage]) -> dict[str, Any]:
         return {
@@ -388,6 +394,7 @@ class HintedTeacherAgent(LLMAgent):
             "available_tools": [tool.openai_schema for tool in self.tools],
             "authoritative_oracle_steps": oracle_steps_from_task(self.task),
             "current_history": _message_rows(history),
+            "student_profile": self.student_profile,
             **self.structured_instance_facts,
         }
 

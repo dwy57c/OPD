@@ -1,4 +1,5 @@
 from coevo.audit import counterfactual_invariance
+from scripts.generate_hint_counterfactuals import validate_same_task_counterfactual
 
 
 def row(level, hint):
@@ -23,3 +24,20 @@ def test_counterfactual_invariance_pairs_same_state_and_level():
     )
     assert result["levels"]["L2_PROCEDURAL"]["mean_similarity"] == 1.0
     assert result["levels"]["L3_ORACLE"]["mean_similarity"] < 0.8
+
+
+def test_counterfactual_must_be_plausible_and_same_task():
+    source = {
+        "state_id": "task:0",
+        "task_id": "task",
+        "fact_audit_context": {"answer": "a"},
+    }
+    validate_same_task_counterfactual(
+        source,
+        {
+            "state_id": "task:0",
+            "task_id": "task",
+            "plausible_alternative": True,
+            "fact_audit_context": {"answer": "b"},
+        },
+    )

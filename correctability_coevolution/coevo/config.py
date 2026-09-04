@@ -158,6 +158,7 @@ class InfraConfig:
     sharpen_enabled: bool = False
     target_operator: str = "raw"
     purified_beta: float = 1.0
+    purified_clip: float = 10.0
 
     def __post_init__(self):
         if self.teacher_hint_mode not in {"none", "closed_model", "open_hinter"}:
@@ -221,6 +222,8 @@ class InfraConfig:
             raise ValueError("target_operator must be raw or purified")
         if self.purified_beta <= 0:
             raise ValueError("purified_beta must be positive")
+        if self.purified_clip <= 0:
+            raise ValueError("purified_clip must be positive")
 
     @property
     def student(self) -> ModelEndpoint:
@@ -369,4 +372,5 @@ class InfraConfig:
             sharpen_enabled=_env_bool("COEVO_SHARPEN_ENABLED", False),
             target_operator=target_operator,
             purified_beta=float(os.getenv("COEVO_PURIFIED_BETA", "1.0")),
+            purified_clip=float(os.getenv("COEVO_PURIFIED_CLIP", "10.0")),
         )

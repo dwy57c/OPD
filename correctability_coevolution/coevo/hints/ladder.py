@@ -173,6 +173,7 @@ def prepare_hint_payload(
     elif parsed is HintLevel.L2_PROCEDURAL:
         public_keys = (
             "domain",
+            "domain_policy",
             "task",
             "goal",
             "task_goal",
@@ -374,11 +375,7 @@ def validate_hint_note(
                 f"closed-model hinter copied an exact tool name: {name}"
             )
 
-    if parsed in {
-        HintLevel.L1_POLICY,
-        HintLevel.L2_PROCEDURAL,
-        HintLevel.HINTER,
-    }:
+    if parsed is HintLevel.HINTER:
         findings = tuple(
             finding
             for finding in hint_fact_leaks(plan, payload)

@@ -11,7 +11,8 @@ HINTER_PRIVILEGED_KEYS = frozenset(
 
 HINTER_SYSTEM_PROMPT = """
 Write the smallest private hint that helps the current agent choose its next
-turn. The training reward separately measures useful state-conditioned lift,
+turn for the Student described by `student_profile`. The training reward
+separately measures useful state-conditioned lift,
 answer copying that survives without the state, distributional dose, and
 length. Convert hidden instance facts into an evidence-acquisition procedure
 whenever possible. Do not output exact function names, executable commands,
@@ -43,7 +44,9 @@ def serialize_public_state(public_state: Any) -> str:
 
 
 def serialize_hinter_input(
-    public_state: Any, privileged_context: Mapping[str, Any]
+    public_state: Any,
+    privileged_context: Mapping[str, Any],
+    student_profile: Mapping[str, Any] | None = None,
 ) -> str:
     actual = set(privileged_context)
     if actual != HINTER_PRIVILEGED_KEYS:
@@ -55,6 +58,7 @@ def serialize_hinter_input(
         {
             "public_state": json.loads(serialize_public_state(public_state)),
             "privileged_context": dict(privileged_context),
+            "student_profile": dict(student_profile or {}),
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -72,6 +76,7 @@ def self_reported_hint_level(text: str) -> str | None:
 def build_hinter_messages(
     public_state: Any,
     privileged_context: Mapping[str, Any],
+    student_profile: Mapping[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     """Canonical serialization for GRPO, sampling, and Student collection."""
 
@@ -79,6 +84,8 @@ def build_hinter_messages(
         {"role": "system", "content": HINTER_SYSTEM_PROMPT},
         {
             "role": "user",
-            "content": serialize_hinter_input(public_state, privileged_context),
+            "content": serialize_hinter_input(
+                public_state, privileged_context, student_profile
+            ),
         },
     ]

@@ -25,7 +25,7 @@ The hint ladder is shared by every experiment:
 |---|---|
 | `L0_NONE` | No hint and no hinter API call. Evaluation-only base control. |
 | `L1_POLICY` | 15–40 word general policy or safety reminder; oracle steps are removed before the request. |
-| `L2_PROCEDURAL` | Blind-written from only public state and goal; hidden facts remain available only to validation. |
+| `L2_PROCEDURAL` | Blind-written from public state, goal, and public policy; no hidden-fact audit is applied. |
 | `L3_ORACLE` | Full natural-language oracle note; supplied instance facts must be stated. |
 
 `COEVO_SHARPEN_ENABLED=0` is the experimental default. Student training retains

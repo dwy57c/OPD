@@ -48,6 +48,8 @@ def summarize_level_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "contract_violation_rate": (
             (attempted - len(valid)) / attempted if attempted else 0.0
         ),
+        "analytical_scored_rows": len(scored),
+        "analytical_unscored_valid_rows": len(valid) - len(scored),
         "mean_hint_words": sum(row["hint_words"] for row in valid) / count,
         "clarification_rate": sum(
             row["behavior"]["clarification_rate"] for row in valid
@@ -260,6 +262,11 @@ def main() -> None:
                 "hint_words": len(hint_note.split()),
                 "teacher_action": result.action.model_dump(mode="json"),
                 "public_state": state["history_before"],
+                "student_profile": {
+                    "checkpoint": config.current_policy_checkpoint,
+                    "revision": config.current_policy_revision,
+                    "round_index": config.round_index,
+                },
                 "privileged_context": narrow_privileged_context(public_privilege),
                 "fact_audit_context": fact_audit_context,
                 "student_visible_messages": student_messages,
@@ -315,7 +322,41 @@ def main() -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     _write_jsonl(args.output_dir / "audit_rows.jsonl", rows)
     _write_jsonl(args.output_dir / "probe_source_rows.jsonl", probe_sources)
-    summary: dict[str, Any] = {"states": len(states), "levels": {}}
+    skip_reasons = {
+        "missing_l3": 0,
+        "l3_hint_error": 0,
+        "l3_validation_rejected": 0,
+    }
+    eligible_l3_states = 0
+    for state_id in {str(row["state_id"]) for row in rows}:
+        l3_rows = [
+            row
+            for row in rows
+            if str(row["state_id"]) == state_id
+            and row["hint_level"] == HintLevel.L3_ORACLE.value
+        ]
+        if not l3_rows:
+            skip_reasons["missing_l3"] += 1
+        elif l3_rows[0].get("hint_error"):
+            skip_reasons["l3_hint_error"] += 1
+        elif args.validate_standard_actions and not l3_rows[0].get(
+            "standard_action_eligible"
+        ):
+            skip_reasons["l3_validation_rejected"] += 1
+        else:
+            eligible_l3_states += 1
+    summary: dict[str, Any] = {
+        "states": len(states),
+        "levels": {},
+        "analytical_scoring_panel": {
+            "eligible_l3_states": eligible_l3_states,
+            "skipped_states": len(states) - eligible_l3_states,
+            "skip_rate": (
+                (len(states) - eligible_l3_states) / len(states) if states else 0.0
+            ),
+            "skip_reasons": skip_reasons,
+        },
+    }
     for level in levels:
         selected = [row for row in rows if row["hint_level"] == level.value]
         summary["levels"][level.value] = summarize_level_rows(selected)

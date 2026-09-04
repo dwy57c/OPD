@@ -34,20 +34,24 @@ def alfworld_payload():
     }
 
 
-def test_l2_rejects_instance_values_and_accepts_fact_to_procedure():
+def test_blind_l2_does_not_treat_coincidental_facts_as_copying():
     valid = (
         "The applicable record should be retrieved from the authorized source before "
         "stating any charge. If the customer has not supplied the lookup key, ask for "
         "it, then confirm the result before proposing the next action."
     )
     validate_hint_note(valid, payload(), HintLevel.L2_PROCEDURAL)
-    for invalid in (
+    for coincidental in (
         "Retrieve booking ABC123 and state that the fee is $75.",
         "The relevant travel date is 2027-05-03, so proceed after confirmation.",
-        "Call get_booking_details before answering the customer.",
     ):
-        with pytest.raises(ValueError):
-            validate_hint_note(invalid, payload(), HintLevel.L2_PROCEDURAL)
+        validate_hint_note(coincidental, payload(), HintLevel.L2_PROCEDURAL)
+    with pytest.raises(ValueError, match="tool name"):
+        validate_hint_note(
+            "Call get_booking_details before answering the customer.",
+            payload(),
+            HintLevel.L2_PROCEDURAL,
+        )
 
 
 def test_tau2_l3_must_explicitly_use_an_oracle_fact():
@@ -105,7 +109,7 @@ def test_identifier_audit_still_rejects_concrete_values(text):
     assert "identifier" in hint_fact_leaks(text, payload())
 
 
-def test_alfworld_l2_rejects_direct_and_hedged_structured_facts():
+def test_blind_alfworld_l2_is_not_fact_checked_after_generation():
     leaked = (
         "The agent has only the room overview and no inventory yet. The next step "
         "is to head toward the coffee machine area and observe whether a mug is "
@@ -122,15 +126,11 @@ def test_alfworld_l2_rejects_direct_and_hedged_structured_facts():
         "locations without prioritizing one, confirm the object by observation, "
         "track inventory, and only then perform the required state-changing step."
     )
-    for value in (leaked, wrapped):
-        with pytest.raises(ValueError, match="structured_fact:coffee machine"):
-            validate_hint_note(value, alfworld_payload(), HintLevel.L2_PROCEDURAL)
-    with pytest.raises(ValueError, match="structured_fact:mug is cold"):
-        validate_hint_note(
-            state_leak,
-            alfworld_payload(),
-            HintLevel.L2_PROCEDURAL,
-        )
+    for value in (leaked, wrapped, state_leak):
+        validate_hint_note(value, alfworld_payload(), HintLevel.L2_PROCEDURAL)
+    assert "structured_fact:coffee machine" in hint_fact_leaks(
+        leaked, alfworld_payload()
+    )
 
 
 def test_alfworld_l2_accepts_uninformed_exploration_procedure():
@@ -191,18 +191,25 @@ def test_l1_payload_removes_all_structured_privilege():
 def test_l2_is_blind_to_privileged_facts_but_validator_can_still_audit_them():
     source = {
         **alfworld_payload(),
+        "domain_policy": "Heat objects before satisfying a hot-object goal.",
         "task": "Put a hot mug in a cabinet.",
         "current_history": [{"role": "user", "content": "room overview"}],
     }
     prepared = prepare_hint_payload(source, HintLevel.L2_PROCEDURAL)
-    assert set(prepared) == {"domain", "task", "current_history", "hint_level"}
+    assert set(prepared) == {
+        "domain",
+        "domain_policy",
+        "task",
+        "current_history",
+        "hint_level",
+    }
     assert "coffeemachine" not in str(prepared)
-    with pytest.raises(ValueError, match="structured_fact:coffee machine"):
-        validate_hint_note(
-            "Inspect the coffee machine first, then confirm what is there.",
-            source,
-            HintLevel.L2_PROCEDURAL,
-        )
+    assert "Heat objects" in str(prepared)
+    validate_hint_note(
+        "Inspect the coffee machine first, then confirm what is there.",
+        source,
+        HintLevel.L2_PROCEDURAL,
+    )
 
 
 def test_domain_slot_changes_the_prompt_and_l3_requires_disclosure():

@@ -33,9 +33,13 @@ def main() -> None:
     plt.close(figure)
 
     invariance = counterfactual["levels"]
-    values = [invariance.get(level, {}).get("mean_similarity", 0.0) for level in levels]
+    counterfactual_levels = list(invariance)
+    values = [
+        invariance[level].get("mean_similarity", 0.0)
+        for level in counterfactual_levels
+    ]
     figure, axis = plt.subplots(figsize=(7, 4))
-    axis.bar(levels, values)
+    axis.bar(counterfactual_levels, values)
     axis.set_ylim(0, 1)
     axis.set_ylabel("counterfactual hint similarity")
     figure.tight_layout()

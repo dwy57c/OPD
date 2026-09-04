@@ -22,3 +22,5 @@ def test_hint_errors_are_reported_but_excluded_from_behavior_means():
     assert summary["hint_error_rows"] == 1
     assert summary["contract_violation_rate"] == 0.5
     assert summary["clarification_rate"] == 0.5
+    assert summary["analytical_scored_rows"] == 0
+    assert summary["analytical_unscored_valid_rows"] == 1

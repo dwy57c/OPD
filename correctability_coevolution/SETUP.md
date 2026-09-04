@@ -8,7 +8,7 @@ Keep credentials outside the repository. The E4 eight-GPU layout is fixed:
 |---|---|
 | frozen policy service | 0 |
 | open-hinter service | 1 |
-| hinter training | 2–7 |
+| Student or hinter training | 2–7 |
 
 ```bash
 cp ../.env.example ../.env
@@ -18,6 +18,7 @@ export COEVO_HINTER_BASE_MODEL=/path/to/open-hinter
 export COEVO_HINTER_URL=http://127.0.0.1:8004
 export COEVO_HINTER_MODEL=hinter
 export COEVO_HINTER_GPUS=1
+export COEVO_POLICY_TRAIN_GPUS=2,3,4,5,6,7
 export COEVO_HINTER_TRAIN_GPUS=2,3,4,5,6,7
 ```
 
@@ -31,8 +32,8 @@ pytest -q
 ## E1: fixed-ladder audit
 
 Collect one immutable L0 public-state pool, then audit L1/L2/L3 on the same
-states. L2 is blind-written from the public state and goal; its hidden facts
-are retained only by the validator. L3 must state hidden facts explicitly.
+states. L2 is blind-written from the public state, goal, and public domain
+policy, and is not fact-checked afterward. L3 must state hidden facts explicitly.
 
 ```bash
 python scripts/collect_round.py \
@@ -47,18 +48,23 @@ python scripts/audit_hint_ladder.py \
 ```
 
 The audit runs the same three teacher-forced views used by GRPO and reports
-mean lift, mean analytical copy, dose KL, and copy/transferable fractions.
+mean lift, mean analytical copy, and copy/transferable fractions. It records the
+coarse dose value only as an internal penalty diagnostic, not a paper metric.
 `recommended_copying_weight_from_l3` sets lambda from the observed L3 anchor.
-Generate the counterfactual rows by rotating only hidden facts, then render the
-two E1 figures:
+`analytical_scoring_panel` reports how many states were skipped because no L3
+standard action survived the strict contract and continuation validation.
+Provide one environment-valid alternative answer for the same `state_id` and
+`task_id`, marked `plausible_alternative=true`. Regenerate the open hinter under
+the original and changed facts, then render the two E1 figures:
 
 ```bash
 python scripts/generate_hint_counterfactuals.py \
   artifacts/e1_hint_audit/audit_rows.jsonl \
-  --output artifacts/e1_counterfactual_rows.jsonl
+  --counterfactuals artifacts/e1_same_task_alternatives.jsonl \
+  --output-dir artifacts/e1_open_counterfactual
 python scripts/evaluate_hint_counterfactuals.py \
-  artifacts/e1_hint_audit/audit_rows.jsonl \
-  artifacts/e1_counterfactual_rows.jsonl \
+  artifacts/e1_open_counterfactual/original.jsonl \
+  artifacts/e1_open_counterfactual/counterfactual.jsonl \
   --output artifacts/e1_counterfactual.json
 python scripts/plot_e1_hint_metrics.py \
   artifacts/e1_hint_audit/summary.json \
@@ -81,8 +87,8 @@ python scripts/run_dosage_experiment.py \
   --student-steps 100
 ```
 
-The purified sink uses
-`P_target ∝ P0 exp((log q(s,h) - log p(h)) / COEVO_PURIFIED_BETA)`.
+The purified sink centers `log q(s,h) - log p(h)`, applies
+`c*tanh(delta/c)` with `COEVO_PURIFIED_CLIP=10`, and then forms the target.
 
 ## E3: curriculum sensor
 
@@ -106,14 +112,17 @@ rows are excluded, and every selected training row has
 
 ## Cold-start hinter SFT
 
-Cold start is fail-closed: it requires at least two Student checkpoints and at
-least two non-zero minimal sufficient doses. Each `--source` contains the
-checkpoint identity, its E1 rows, and its h* manifest.
+Cold start is fail-closed: it requires low-copy rows from at least two Student
+checkpoints and at least two non-zero minimal sufficient doses. The prompt gets
+an explicit `student_profile` containing checkpoint and measured curriculum
+scores, so conflicting h* labels do not share an identical input. Each
+`--source` contains the checkpoint identity, its E1 rows, and its h* manifest.
 
 ```bash
 python scripts/build_hinter_cold_start_dataset.py \
   --source student_0 artifacts/e1_s0/audit_rows.jsonl artifacts/hstar_s0.json \
   --source student_1 artifacts/e1_s1/audit_rows.jsonl artifacts/hstar_s1.json \
+  --max-mean-copy 0.1 \
   --output artifacts/hinter_cold_start.jsonl
 ```
 
@@ -136,7 +145,8 @@ R      = mean(lift) - lambda mean(copy) - nu dose - mu tokens(h)
 ```
 
 The sparse dose KL is a stable coarse-grained lower bound on shared explicit
-support plus one tail bucket. Rule-detected fact/tool leakage still caps reward
+support plus one tail bucket. Treat it only as an internal penalty proxy, not as
+a reported KL metric. Rule-detected fact/tool leakage still caps reward
 at a negative floor. No Student rollout, learned discriminator, pass@k, or
 post-distillation gain enters GRPO.
 

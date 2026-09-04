@@ -21,6 +21,7 @@ class HinterGRPORow:
     messages: tuple[dict[str, Any], ...]
     state_hash: str
     public_state: Any
+    student_profile: Any
     privileged_context: Any
     fact_audit_context: Any
     student_visible_messages: tuple[dict[str, Any], ...]
@@ -67,6 +68,7 @@ def build_hinter_grpo_dataset(
         source = candidates[0]
         required = (
             "public_state",
+            "student_profile",
             "privileged_context",
             "student_visible_messages",
         )
@@ -76,7 +78,10 @@ def build_hinter_grpo_dataset(
                 f"audited standard row is missing fields: {', '.join(missing)}"
             )
         privileged_context = narrow_privileged_context(source["privileged_context"])
-        messages = build_hinter_messages(source["public_state"], privileged_context)
+        student_profile = dict(source["student_profile"])
+        messages = build_hinter_messages(
+            source["public_state"], privileged_context, student_profile
+        )
         fact_audit_context = dict(source.get("fact_audit_context") or {})
         fact_audit_context.setdefault("available_tools", source.get("tools") or [])
         fact_audit_context.setdefault(
@@ -95,6 +100,7 @@ def build_hinter_grpo_dataset(
             messages=tuple(messages),
             state_hash=state_hash,
             public_state=source["public_state"],
+            student_profile=student_profile,
             privileged_context=privileged_context,
             fact_audit_context=fact_audit_context,
             student_visible_messages=tuple(source["student_visible_messages"]),

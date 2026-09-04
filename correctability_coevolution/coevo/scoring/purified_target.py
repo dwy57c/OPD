@@ -48,11 +48,14 @@ def construct_purified_target(
     hinted: "SparseTargetView",
     hint_only: "SparseTargetView",
     beta: float = 1.0,
+    clip_threshold: float = 10.0,
 ) -> PurifiedTargetResult:
-    """Purified OPSD target P0 * exp((log q_h - log p_h) / beta)."""
+    """Centered, tanh-clipped Purified OPSD PMI target."""
 
     if beta <= 0:
         raise ValueError("purified target beta must be positive")
+    if clip_threshold <= 0:
+        raise ValueError("purified clip_threshold must be positive")
     if not (
         unhinted.target_input_ids
         == hinted.target_input_ids
@@ -76,22 +79,24 @@ def construct_purified_target(
         p0 = _project(p0_lookup, support)
         q = _project(q_lookup, support)
         reference = _project(reference_lookup, support)
+        residual = [
+            math.log(max(teacher, 1e-12)) - math.log(max(ref, 1e-12))
+            for teacher, ref in zip(q, reference)
+        ]
+        residual_mean = sum(residual) / len(residual)
+        stabilized = [
+            clip_threshold * math.tanh((value - residual_mean) / clip_threshold)
+            for value in residual
+        ]
         logits = [
-            math.log(max(base, 1e-12))
-            + (math.log(max(teacher, 1e-12)) - math.log(max(ref, 1e-12)))
-            / beta
-            for base, teacher, ref in zip(p0, q, reference)
+            math.log(max(base, 1e-12)) + correction / beta
+            for base, correction in zip(p0, stabilized)
         ]
         maximum = max(logits)
         weights = [math.exp(value - maximum) for value in logits]
         normalizer = sum(weights)
         target = [value / normalizer for value in weights]
-        correction = sum(
-            teacher
-            * abs(math.log(max(teacher, 1e-12)) - math.log(max(ref, 1e-12)))
-            for teacher, ref in zip(q, reference)
-        )
-        scores.append(correction)
+        scores.append(sum(teacher * abs(value) for teacher, value in zip(q, stabilized)))
         output_ids.append(tuple(support))
         output_logs.append(tuple(math.log(max(value, 1e-12)) for value in target[:-1]))
         output_mass.append(sum(target[:-1]))

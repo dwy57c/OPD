@@ -41,6 +41,11 @@ class Tau2PolicyFactory:
                 hint_level=self.config.hint_level,
                 hinter_mode=self.config.teacher_hint_mode,
                 hint_domain=self.config.domain,
+                student_profile={
+                    "checkpoint": self.config.current_policy_checkpoint,
+                    "revision": self.config.current_policy_revision,
+                    "round_index": self.config.round_index,
+                },
             )
         return self._agent(environment, endpoint)
 

@@ -11,6 +11,7 @@ def audit_row(task_id, level, hint):
         "hint_level": level,
         "hint": {"hint": {"plan": hint}},
         "hint_error": None,
+        "analytical_signals": {"mean_copy": 0.02},
         "public_state": [{"role": "user", "content": "help"}],
         "privileged_context": {
             "domain_policy": "policy",
@@ -51,3 +52,19 @@ def test_cold_start_requires_multiple_checkpoints_and_doses():
         "L2_PROCEDURAL",
     }
     assert all(row["messages"][-1]["content"].startswith("level: L") for row in rows)
+    student_inputs = {
+        row["student_checkpoint"]: row["messages"][1]["content"] for row in rows
+    }
+    assert student_inputs["student-a"] != student_inputs["student-b"]
+
+
+def test_cold_start_drops_high_copy_rows():
+    first = source("student-a")
+    dirty_rows = []
+    for row in source("student-b").audit_rows:
+        dirty_rows.append({**row, "analytical_signals": {"mean_copy": 0.8}})
+    dirty = ColdStartSource(
+        "student-b", tuple(dirty_rows), source("student-b").hstar_manifest
+    )
+    with pytest.raises(ValueError, match="retain low-copy rows"):
+        build_hinter_cold_start_dataset([first, dirty], max_mean_copy=0.1)

@@ -223,6 +223,7 @@ class TeacherTargetBuilder:
                 **asdict(self.skill_config),
                 "target_operator": config.target_operator,
                 "purified_beta": config.purified_beta,
+                "purified_clip": config.purified_clip,
             }
         )
         self._tokenizer_hash = canonical_hash(
@@ -500,6 +501,7 @@ class TeacherTargetBuilder:
                     hinted=hinted,
                     hint_only=views["hint_only"],
                     beta=self.config.purified_beta,
+                    clip_threshold=self.config.purified_clip,
                 )
                 if self.config.target_operator == "purified"
                 else construct_skill_contrast_target(

@@ -25,6 +25,8 @@ def _hint_text(row: Mapping[str, Any]) -> str:
 
 def build_hinter_cold_start_dataset(
     sources: Iterable[ColdStartSource],
+    *,
+    max_mean_copy: float = 0.1,
 ) -> list[dict[str, Any]]:
     """Build a fail-closed, dose-diverse SFT seed over multiple Students."""
 
@@ -32,9 +34,12 @@ def build_hinter_cold_start_dataset(
     checkpoints = {source.student_checkpoint for source in sources}
     if len(checkpoints) < 2:
         raise ValueError("cold-start SFT requires at least two Student checkpoints")
+    if max_mean_copy < 0:
+        raise ValueError("max_mean_copy must be non-negative")
 
     result = []
     selected_levels: set[HintLevel] = set()
+    selected_checkpoints: set[str] = set()
     for source in sources:
         decisions = source.hstar_manifest.get("decisions") or {}
         for row in source.audit_rows:
@@ -52,8 +57,21 @@ def build_hinter_cold_start_dataset(
             hint = _hint_text(row)
             if not hint:
                 continue
+            signals = row.get("analytical_signals") or {}
+            if "mean_copy" not in signals:
+                continue
+            if float(signals["mean_copy"]) > max_mean_copy:
+                continue
             privileged = narrow_privileged_context(row["privileged_context"])
-            messages = build_hinter_messages(row["public_state"], privileged)
+            student_profile = {
+                "checkpoint": source.student_checkpoint,
+                "unhinted_success": decision.get("no_hint_score"),
+                "best_hinted_success": decision.get("best_hint_score"),
+                "curriculum_band": decision.get("band"),
+            }
+            messages = build_hinter_messages(
+                row["public_state"], privileged, student_profile
+            )
             messages.append(
                 {
                     "role": "assistant",
@@ -64,12 +82,18 @@ def build_hinter_cold_start_dataset(
                 {
                     "messages": messages,
                     "student_checkpoint": source.student_checkpoint,
+                    "student_profile": student_profile,
                     "state_hash": str(row["state_hash"]),
                     "minimal_sufficient_level": level.value,
                 }
             )
             selected_levels.add(level)
+            selected_checkpoints.add(source.student_checkpoint)
 
+    if len(selected_checkpoints) < 2:
+        raise ValueError(
+            "cold-start SFT must retain low-copy rows from at least two Student checkpoints"
+        )
     if len(selected_levels) < 2:
         raise ValueError(
             "cold-start SFT requires at least two non-zero minimal hint levels"

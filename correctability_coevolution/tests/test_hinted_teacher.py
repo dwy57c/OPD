@@ -306,3 +306,13 @@ def test_open_hinter_privileged_context_has_exact_keys():
     }
     with pytest.raises(ValueError, match="keys must be exactly"):
         build_hinter_messages([], {**narrow_privileged_context(payload), "extra": 1})
+
+
+def test_student_profile_changes_hinter_input_without_expanding_privilege():
+    privilege = narrow_privileged_context(
+        {"domain_policy": "policy", "authoritative_oracle_steps": "oracle"}
+    )
+    weak = build_hinter_messages([], privilege, {"unhinted_success": 0.1})
+    strong = build_hinter_messages([], privilege, {"unhinted_success": 0.8})
+    assert weak != strong
+    assert "student_profile" in weak[1]["content"]

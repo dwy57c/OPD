@@ -220,6 +220,7 @@ def main() -> None:
         "sharpen_enabled": False,
         "target_operators": args.target_operators,
         "purified_beta": float(base_env.get("COEVO_PURIFIED_BETA", "1.0")),
+        "purified_clip": float(base_env.get("COEVO_PURIFIED_CLIP", "10.0")),
         "task_ids": args.task_ids,
         "seeds": args.seeds,
         "public_state_pools": {

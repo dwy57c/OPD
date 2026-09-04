@@ -25,8 +25,10 @@ The falsifiable claims are:
   acquisition and must not use an incomplete, privileged candidate ordering.
 - L3 receives structured hidden facts and must state them explicitly.
 
-The validator keeps the full hidden record even when L2 generation is blind.
-For tau2 it detects dates, amounts, database values, ordinary identifiers, and
+L1/L2 are not fact-checked after generation because they never received the
+answer; only their format contract is checked. L3 and the open hinter are
+fact-audited because they did receive privilege. For tau2 the audit detects
+dates, amounts, database values, ordinary identifiers, and
 mixed capital-and-digit identifiers such as `ZX99AB`. For ALFWorld it checks
 the goal object's true receptacle, the destination instance, and unobserved
 states against both class and instance aliases.
@@ -50,7 +52,8 @@ R(h) = mean(lift_t) - lambda mean(copy_t) - nu dose - mu tokens(h)
 
 The dose estimator is the coarse-grained forward KL on shared explicit sparse
 support plus a tail bucket, a stable lower bound that avoids top-k membership
-flips dominating the signal. Lambda is calibrated from E1's natural L3 hints:
+flips dominating the signal. It is an optimizer penalty proxy, not a reported
+KL metric or paper claim. Lambda is calibrated from E1's natural L3 hints:
 the L3 mean-copy anchor must cancel its positive mean lift before dose and
 length costs are added.
 
@@ -65,18 +68,22 @@ copy mass         = sum_t copy_t
 transferable mass = sum_t max(lift_t - copy_t, 0)
 ```
 
-Report their normalized fractions for L1/L2/L3. A second E1 intervention swaps
-only hidden facts and regenerates hints; L2 should remain invariant while L3
-should change.
+Report their normalized fractions for L1/L2/L3. A second E1 intervention tests
+the open hinter, which really sees privilege: keep the public state and task
+fixed, replace the answer with an environment-valid alternative for that same
+task, and regenerate. Do not create counterfactuals by borrowing another task's
+answer.
 
 ## 4. Purified sink control
 
 The E2 sink-side control follows Purified OPSD. With clean base distribution
-`P0`, full hinted Teacher `q(s,h)`, and hint-only reference `p(h)`:
+`P0`, full hinted Teacher `q(s,h)`, and hint-only reference `p(h)`. The
+vocabulary residual is centered and soft-clipped before exponentiation:
 
 ```text
-P_target(v) proportional to
-P0(v) * exp((log q(v | s,h) - log p(v | h)) / beta).
+delta(v) = log q(v | s,h) - log p(v | h)
+bounded(v) = c * tanh((delta(v) - mean_v delta(v)) / c)
+P_target(v) proportional to P0(v) * exp(bounded(v) / beta).
 ```
 
 E2 crosses `raw/purified` target operators with the fixed hint levels. This
@@ -99,9 +106,11 @@ used by the reward. Open-hinter acceptance uses one unlevelled 140-word gate
 for format, exact tool names, and hidden facts.
 
 Cold-start SFT is a necessary precondition, not an optional convenience. Its
-builder requires examples from at least two Student checkpoints and at least
-two non-zero minimal sufficient levels. Rows are selected by h* rather than by
-raw closed-model volume.
+builder requires low-copy examples from at least two Student checkpoints and
+at least two non-zero minimal sufficient levels. Each prompt includes a public
+`student_profile` with the checkpoint and measured h* scores, so different
+Students do not produce contradictory targets for an identical input. Rows are
+selected by h* rather than by raw closed-model volume.
 
 ## 6. Alternation and acceptance
 

@@ -208,6 +208,7 @@ def test_grpo_dataset_uses_one_fixed_l3_standard_action_per_state():
     common = {
         "state_hash": "s",
         "public_state": [{"role": "user", "content": "help"}],
+        "student_profile": {"checkpoint": "student"},
         "privileged_context": {
             "domain_policy": "policy",
             "authoritative_oracle_steps": "private",
