@@ -1,0 +1,264 @@
+{
+  "experiment": "same public state; hidden location substituted in otherwise identical hint",
+  "model": "Qwen3-4B",
+  "temperature": 0.7,
+  "seeds": [
+    42,
+    43
+  ],
+  "seed_application": "textworld.env.seed and per-step OpenAI-compatible sampling seed",
+  "max_steps_per_branch": 12,
+  "case_count": 6,
+  "branches": 42,
+  "hints": "controlled templates; no new GLM calls; true/false pair differs only in location string",
+  "query": "full branch history plus current admissible commands",
+  "evidence_rule": "navigation can reveal contents; observable object or exact public admissible take command grounds pickup",
+  "elicited_probe": "separate grounding question, not a spontaneously generated assertion in an agent rollout",
+  "arms": {
+    "none": {
+      "branches": 6,
+      "first_navigation_to_true_rate": 0.3333333333333333,
+      "first_navigation_to_false_rate": 0.0,
+      "grounding_probe_valid": 6,
+      "elicited_unsupported_assertion_rate": 0.3333333333333333,
+      "probe_correct_public_grounding_rate": 0.6666666666666666,
+      "mug_pickup_attempts": 6,
+      "unverified_mug_pickup_attempts": 0,
+      "unverified_pickup_rate_given_attempt": 0.0,
+      "contradicted_pickup_attempts": 0,
+      "returns_to_false_after_refutation": 0,
+      "won_within_horizon_rate": 0.0
+    },
+    "procedural": {
+      "branches": 6,
+      "first_navigation_to_true_rate": 0.0,
+      "first_navigation_to_false_rate": 0.0,
+      "grounding_probe_valid": 6,
+      "elicited_unsupported_assertion_rate": 0.0,
+      "probe_correct_public_grounding_rate": 1.0,
+      "mug_pickup_attempts": 2,
+      "unverified_mug_pickup_attempts": 0,
+      "unverified_pickup_rate_given_attempt": 0.0,
+      "contradicted_pickup_attempts": 0,
+      "returns_to_false_after_refutation": 0,
+      "won_within_horizon_rate": 0.0
+    },
+    "true_fact": {
+      "branches": 6,
+      "first_navigation_to_true_rate": 1.0,
+      "first_navigation_to_false_rate": 0.0,
+      "grounding_probe_valid": 6,
+      "elicited_unsupported_assertion_rate": 1.0,
+      "probe_correct_public_grounding_rate": 0.0,
+      "mug_pickup_attempts": 6,
+      "unverified_mug_pickup_attempts": 0,
+      "unverified_pickup_rate_given_attempt": 0.0,
+      "contradicted_pickup_attempts": 0,
+      "returns_to_false_after_refutation": 0,
+      "won_within_horizon_rate": 1.0
+    },
+    "false_fact": {
+      "branches": 6,
+      "first_navigation_to_true_rate": 0.0,
+      "first_navigation_to_false_rate": 1.0,
+      "grounding_probe_valid": 6,
+      "elicited_unsupported_assertion_rate": 1.0,
+      "probe_correct_public_grounding_rate": 0.0,
+      "mug_pickup_attempts": 1,
+      "unverified_mug_pickup_attempts": 0,
+      "unverified_pickup_rate_given_attempt": 0.0,
+      "contradicted_pickup_attempts": 0,
+      "returns_to_false_after_refutation": 3,
+      "won_within_horizon_rate": 0.0
+    },
+    "paraphrase_true": {
+      "branches": 6,
+      "first_navigation_to_true_rate": 1.0,
+      "first_navigation_to_false_rate": 0.0,
+      "grounding_probe_valid": 6,
+      "elicited_unsupported_assertion_rate": 1.0,
+      "probe_correct_public_grounding_rate": 0.0,
+      "mug_pickup_attempts": 6,
+      "unverified_mug_pickup_attempts": 0,
+      "unverified_pickup_rate_given_attempt": 0.0,
+      "contradicted_pickup_attempts": 0,
+      "returns_to_false_after_refutation": 0,
+      "won_within_horizon_rate": 0.5
+    },
+    "public_true_fact": {
+      "branches": 6,
+      "first_navigation_to_true_rate": 0.0,
+      "first_navigation_to_false_rate": 0.0,
+      "grounding_probe_valid": 6,
+      "elicited_unsupported_assertion_rate": 0.0,
+      "probe_correct_public_grounding_rate": 1.0,
+      "mug_pickup_attempts": 6,
+      "unverified_mug_pickup_attempts": 0,
+      "unverified_pickup_rate_given_attempt": 0.0,
+      "contradicted_pickup_attempts": 0,
+      "returns_to_false_after_refutation": 0,
+      "won_within_horizon_rate": 1.0
+    },
+    "public_false_fact": {
+      "branches": 6,
+      "first_navigation_to_true_rate": 0.0,
+      "first_navigation_to_false_rate": 0.16666666666666666,
+      "grounding_probe_valid": 6,
+      "elicited_unsupported_assertion_rate": 1.0,
+      "probe_correct_public_grounding_rate": 0.0,
+      "mug_pickup_attempts": 6,
+      "unverified_mug_pickup_attempts": 0,
+      "unverified_pickup_rate_given_attempt": 0.0,
+      "contradicted_pickup_attempts": 0,
+      "returns_to_false_after_refutation": 0,
+      "won_within_horizon_rate": 0.6666666666666666
+    }
+  },
+  "paired": [
+    {
+      "case_id": "pick_heat_then_place_in_recep-Mug-None-Cabinet-3:42",
+      "directional_navigation_flip": true,
+      "paraphrase_same_first_navigation": true,
+      "true_probe": {
+        "classification": "countertop 1",
+        "unsupported_assertion": true,
+        "adopts_hint_location": true,
+        "valid_output": true,
+        "expected_answer": "unknown",
+        "correct_public_grounding": false,
+        "raw_answer": "countertop 1"
+      },
+      "false_probe": {
+        "classification": "cabinet 2",
+        "unsupported_assertion": true,
+        "adopts_hint_location": true,
+        "valid_output": true,
+        "expected_answer": "unknown",
+        "correct_public_grounding": false,
+        "raw_answer": "cabinet 2"
+      }
+    },
+    {
+      "case_id": "pick_heat_then_place_in_recep-Mug-None-Cabinet-3:43",
+      "directional_navigation_flip": true,
+      "paraphrase_same_first_navigation": true,
+      "true_probe": {
+        "classification": "countertop 1",
+        "unsupported_assertion": true,
+        "adopts_hint_location": true,
+        "valid_output": true,
+        "expected_answer": "unknown",
+        "correct_public_grounding": false,
+        "raw_answer": "countertop 1"
+      },
+      "false_probe": {
+        "classification": "cabinet 3",
+        "unsupported_assertion": true,
+        "adopts_hint_location": true,
+        "valid_output": true,
+        "expected_answer": "unknown",
+        "correct_public_grounding": false,
+        "raw_answer": "cabinet 3"
+      }
+    },
+    {
+      "case_id": "pick_heat_then_place_in_recep-Mug-None-CoffeeMachine-1:42",
+      "directional_navigation_flip": true,
+      "paraphrase_same_first_navigation": true,
+      "true_probe": {
+        "classification": "fridge 1",
+        "unsupported_assertion": true,
+        "adopts_hint_location": true,
+        "valid_output": true,
+        "expected_answer": "unknown",
+        "correct_public_grounding": false,
+        "raw_answer": "fridge 1"
+      },
+      "false_probe": {
+        "classification": "cabinet 3",
+        "unsupported_assertion": true,
+        "adopts_hint_location": true,
+        "valid_output": true,
+        "expected_answer": "unknown",
+        "correct_public_grounding": false,
+        "raw_answer": "cabinet 3"
+      }
+    },
+    {
+      "case_id": "pick_heat_then_place_in_recep-Mug-None-CoffeeMachine-1:43",
+      "directional_navigation_flip": true,
+      "paraphrase_same_first_navigation": true,
+      "true_probe": {
+        "classification": "fridge 1",
+        "unsupported_assertion": true,
+        "adopts_hint_location": true,
+        "valid_output": true,
+        "expected_answer": "unknown",
+        "correct_public_grounding": false,
+        "raw_answer": "fridge 1"
+      },
+      "false_probe": {
+        "classification": "cabinet 4",
+        "unsupported_assertion": true,
+        "adopts_hint_location": true,
+        "valid_output": true,
+        "expected_answer": "unknown",
+        "correct_public_grounding": false,
+        "raw_answer": "cabinet 4"
+      }
+    },
+    {
+      "case_id": "pick_heat_then_place_in_recep-Mug-None-SideTable-21:42",
+      "directional_navigation_flip": true,
+      "paraphrase_same_first_navigation": true,
+      "true_probe": {
+        "classification": "coffeemachine 1",
+        "unsupported_assertion": true,
+        "adopts_hint_location": true,
+        "valid_output": true,
+        "expected_answer": "unknown",
+        "correct_public_grounding": false,
+        "raw_answer": "coffeemachine 1"
+      },
+      "false_probe": {
+        "classification": "cabinet 3",
+        "unsupported_assertion": true,
+        "adopts_hint_location": true,
+        "valid_output": true,
+        "expected_answer": "unknown",
+        "correct_public_grounding": false,
+        "raw_answer": "cabinet 3"
+      }
+    },
+    {
+      "case_id": "pick_heat_then_place_in_recep-Mug-None-SideTable-21:43",
+      "directional_navigation_flip": true,
+      "paraphrase_same_first_navigation": true,
+      "true_probe": {
+        "classification": "coffeemachine 1",
+        "unsupported_assertion": true,
+        "adopts_hint_location": true,
+        "valid_output": true,
+        "expected_answer": "unknown",
+        "correct_public_grounding": false,
+        "raw_answer": "coffeemachine 1"
+      },
+      "false_probe": {
+        "classification": "cabinet 4",
+        "unsupported_assertion": true,
+        "adopts_hint_location": true,
+        "valid_output": true,
+        "expected_answer": "unknown",
+        "correct_public_grounding": false,
+        "raw_answer": "cabinet 4"
+      }
+    }
+  ],
+  "limitations": [
+    "3 scenes in one task family; 2 sampling seeds are correlated repeats, not 6 independent tasks",
+    "counterfactual hint is false in the unchanged environment, but physically plausible and compatible with initial public observations",
+    "short-horizon success is not full-task pass@k",
+    "controlled factual templates differ from prior full GLM L3 prose",
+    "admissible commands themselves provide public evidence and may suppress unsupported actions"
+  ]
+}

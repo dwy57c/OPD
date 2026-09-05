@@ -1,0 +1,7 @@
+{
+  "verified_branches": 42,
+  "executed_steps": 410,
+  "invalid_actions": 102,
+  "unverified_mug_pickup_attempts": 0,
+  "all_recorded_transitions_reproduced": true
+}
